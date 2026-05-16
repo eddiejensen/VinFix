@@ -1,5 +1,14 @@
 node_modules
 .env
+backend/.data/
 .expo
 dist
 build
+
+# Xcode user-specific files (ios/ project is committed for native builds)
+mobile/ios/Pods/
+mobile/ios/build/
+mobile/ios/*.xcuserstate
+mobile/ios/.xcode.env.local
+mobile/android/.gradle/
+mobile/android/app/build/

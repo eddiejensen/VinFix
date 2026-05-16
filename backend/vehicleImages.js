@@ -14,15 +14,72 @@ function normalizeText(value) {
 }
 
 function buildSearchQueries({ year, make, model, trim }) {
+  const generationYears = getLikelyGenerationYears(year, make, model);
   return [
     [year, make, model, trim].filter(Boolean).join(' '),
+    ...generationYears.map((generationYear) =>
+      [generationYear, make, model, trim].filter(Boolean).join(' ')
+    ),
     [make, model, year].filter(Boolean).join(' '),
-    [make, model].filter(Boolean).join(' '),
-  ].filter(Boolean);
+  ].filter(Boolean).filter((query, index, queries) => queries.indexOf(query) === index);
+}
+
+function extractYears(value) {
+  const matches = String(value || '').match(/(19[5-9]\d|20[0-4]\d)/g) || [];
+  return matches.map((year) => Number.parseInt(year, 10)).filter(Boolean);
+}
+
+function getLikelyGenerationYears(year, make, model) {
+  const requestedYear = Number.parseInt(String(year || ''), 10);
+  const normalizedMake = normalizeText(make);
+  const normalizedModel = normalizeText(model);
+
+  if (
+    requestedYear >= 2000 &&
+    requestedYear <= 2006 &&
+    normalizedMake === 'chevrolet' &&
+    normalizedModel.includes('suburban')
+  ) {
+    return ['2000', '2001', '2002', '2003', '2004', '2005', '2006'].filter(
+      (candidate) => candidate !== String(year)
+    );
+  }
+
+  return [];
+}
+
+function yearLooksCompatible(requested = {}, candidateYears = []) {
+  const parsedRequestedYear = Number.parseInt(String(requested.year || ''), 10);
+  if (!parsedRequestedYear || candidateYears.length === 0) {
+    return true;
+  }
+
+  const normalizedMake = normalizeText(requested.make);
+  const normalizedModel = normalizeText(requested.model);
+
+  if (
+    parsedRequestedYear >= 2000 &&
+    parsedRequestedYear <= 2006 &&
+    normalizedMake === 'chevrolet' &&
+    normalizedModel.includes('suburban')
+  ) {
+    return candidateYears.some((candidateYear) => candidateYear >= 2000 && candidateYear <= 2006);
+  }
+
+  return candidateYears.some((candidateYear) => Math.abs(candidateYear - parsedRequestedYear) <= 3);
+}
+
+function imageYearIsCompatible(requested, ...values) {
+  const foundYears = values.flatMap(extractYears);
+  return yearLooksCompatible(requested, foundYears);
 }
 
 function mapCachedVehicleImage(row, requested = {}) {
   if (!row) return null;
+  if (!imageYearIsCompatible(requested, row.title, row.image_url, row.thumbnail_url, row.attribution_url)) {
+    return null;
+  }
+
   return {
     year: Number.parseInt(row.year || requested.year, 10) || requested.year || null,
     make: row.make || requested.make || '',
@@ -111,6 +168,21 @@ function normalizeVehicleImageResult({ requested, page, imageInfo }) {
   const requestedYear = String(requested.year || '');
   const hasYearInTitle = requestedYear && titleText.includes(requestedYear);
   const metadata = imageInfo?.metadata || {};
+  const mediaYearCompatible = imageYearIsCompatible(
+    requested,
+    page.title,
+    page.pageimage,
+    page.original?.source,
+    page.thumbnail?.source,
+    imageInfo?.url,
+    imageInfo?.thumburl,
+    metadata.ObjectName?.value,
+    metadata.ImageDescription?.value
+  );
+
+  if (!mediaYearCompatible) {
+    return null;
+  }
 
   return {
     year: Number.parseInt(String(requested.year || ''), 10) || requested.year || null,

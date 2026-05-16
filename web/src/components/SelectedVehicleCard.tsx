@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import type { SelectedVehicle, VehicleImage } from "../types";
 import { FuelTypeBadge } from "./FuelTypeBadge";
 import { formatFuelTypeLabel } from "../utils/fuelType";
+import { isVehicleImageCompatible } from "../utils/vehicleImages";
 
 export function vehicleName(vehicle: SelectedVehicle) {
   return [vehicle.year, vehicle.make, vehicle.model, vehicle.trim].filter(Boolean).join(" ");
@@ -20,7 +21,10 @@ export function SelectedVehicleCard({ vehicle, compact = false }: { vehicle: Sel
 
     api.image(vehicle)
       .then((result) => {
-        if (!cancelled) setImage(result.image || null);
+        if (!cancelled) {
+          const nextImage = result.image || null;
+          setImage(nextImage && isVehicleImageCompatible(vehicle, nextImage) ? nextImage : null);
+        }
       })
       .catch(() => {
         if (!cancelled) setImage(null);

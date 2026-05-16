@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { SelectedVehicle, VehicleImage } from "../types";
 import { api } from "../api/client";
 import { vehicleName } from "./SelectedVehicleCard";
+import { isVehicleImageCompatible } from "../utils/vehicleImages";
 
 export function VehicleImageCard({ vehicle }: { vehicle: SelectedVehicle | null }) {
   const [image, setImage] = useState<VehicleImage | null>(null);
@@ -14,7 +15,10 @@ export function VehicleImageCard({ vehicle }: { vehicle: SelectedVehicle | null 
       setLoading(true);
       try {
         const result = await api.image(vehicle);
-        if (!cancelled) setImage(result.image || null);
+        if (!cancelled) {
+          const nextImage = result.image || null;
+          setImage(nextImage && isVehicleImageCompatible(vehicle, nextImage) ? nextImage : null);
+        }
       } catch {
         if (!cancelled) setImage(null);
       } finally {

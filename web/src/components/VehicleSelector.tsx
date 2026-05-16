@@ -49,12 +49,12 @@ export function VehicleSelector() {
     setLoading(true);
     Promise.allSettled([api.trims(year, make, model), api.fitment({ year, make, model, trim })])
       .then(([trimsResult, fitmentResult]) => {
-        if (trimsResult.status === "fulfilled") setTrims(trimsResult.value || []);
+        if (trimsResult.status === "fulfilled") setTrims(Array.from(new Set(trimsResult.value || [])));
         if (fitmentResult.status === "fulfilled") {
           const fit = fitmentResult.value;
           const context = { year, make, model, trim };
           setEngines((fit.engines || []).map((item) => normalizeEngineOption(item, context)).filter((item) => item.label));
-          setDrivetrains(fit.drivetrains || []);
+          setDrivetrains(Array.from(new Set(fit.drivetrains || [])));
         } else {
           setError("Engine data was not available. You can still continue with manual details.");
         }
@@ -66,10 +66,11 @@ export function VehicleSelector() {
   const selectedEngine = useMemo(() => engines.find((e) => e.value === engineValue) || null, [engines, engineValue]);
   const needsManualFuelType =
     engines.length === 0 ||
-    !selectedEngine ||
-    selectedEngine.fuelType === "unknown" ||
-    selectedEngine.confidence === "low";
-  const canUse = Boolean(year && make && model);
+    Boolean(
+      selectedEngine &&
+        (selectedEngine.fuelType === "unknown" || selectedEngine.confidence === "low")
+    );
+  const canUse = Boolean(year && make && model && (engines.length === 0 || engineValue));
 
   function save() {
     const fallback = normalizeEngineOption(manualEngine || engineValue || "Unknown engine", { year, make, model, trim });

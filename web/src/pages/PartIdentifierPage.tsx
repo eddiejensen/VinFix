@@ -1,0 +1,3 @@
+export function PartIdentifierPage() {
+  return <div className="page narrow"><div className="page-head"><span className="eyebrow">Part identifier</span><h1>Photo part lookup</h1><p>Upload flow is staged for the next backend endpoint.</p></div><div className="card"><label>Part photo<input type="file" accept="image/*" /></label><label>Location hint<input placeholder="Under hood, near fuel tank, fuse box" /></label><label>Symptoms or codes<textarea placeholder="P0449, no start, fuel smell" /></label><button className="primary">Mock identify part</button><div className="result-card"><h3>Example result</h3><p>Likely part, EVAP vent solenoid. Confirm by connector, location, and part number before buying parts.</p></div></div></div>;
+}

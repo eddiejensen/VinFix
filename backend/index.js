@@ -2083,6 +2083,18 @@ app.get('/', (req, res) => {
   res.send('Auto Fix Help API running');
 });
 
+app.get('/years', (req, res) => {
+  const CURRENT_YEAR = new Date().getFullYear();
+  const MIN_YEAR = 1996;
+
+  const years = Array.from(
+    { length: CURRENT_YEAR - MIN_YEAR + 1 },
+    (_, i) => String(CURRENT_YEAR - i)
+  );
+
+  res.json(years);
+});
+
 app.post('/auth/guest', async (req, res) => {
   try {
     const sessionToken = generateToken();

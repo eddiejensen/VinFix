@@ -8,7 +8,7 @@ import type { FuelType } from "../types";
 import { formatFuelTypeLabel, normalizeFuelType } from "../utils/fuelType";
 
 export function VehicleSelector() {
-  const { setSelectedVehicle } = useVehicle();
+  const { selectedVehicle, setSelectedVehicle } = useVehicle();
   const [years, setYears] = useState<string[]>([]);
   const [makes, setMakes] = useState<string[]>([]);
   const [models, setModels] = useState<string[]>([]);
@@ -24,11 +24,24 @@ export function VehicleSelector() {
   const [manualFuelType, setManualFuelType] = useState<FuelType>("unknown");
   const [drivetrain, setDrivetrain] = useState("");
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    api.years().then(setYears).catch((err) => setError(err.message));
+    api.years().then(setYears).catch(() => setError("Could not load years. Try again in a moment."));
   }, []);
+
+  useEffect(() => {
+    if (!selectedVehicle) return;
+    setYear(selectedVehicle.year || "");
+    setMake(selectedVehicle.make || "");
+    setModel(selectedVehicle.model || "");
+    setTrim(selectedVehicle.trim || "");
+    setEngineValue(selectedVehicle.engine || "");
+    setManualEngine(selectedVehicle.engine || "");
+    setDrivetrain(selectedVehicle.drivetrain || "");
+    setManualFuelType(selectedVehicle.fuelType || "unknown");
+  }, [selectedVehicle?.year, selectedVehicle?.make, selectedVehicle?.model]);
 
   useEffect(() => {
     if (!year) return;
@@ -70,9 +83,14 @@ export function VehicleSelector() {
       selectedEngine &&
         (selectedEngine.fuelType === "unknown" || selectedEngine.confidence === "low")
     );
-  const canUse = Boolean(year && make && model && (engines.length === 0 || engineValue));
+  const canUse = Boolean(year && make && model);
 
   function save() {
+    if (!year || !make || !model) {
+      setError("Year, make, and model are required.");
+      return;
+    }
+
     const fallback = normalizeEngineOption(manualEngine || engineValue || "Unknown engine", { year, make, model, trim });
     const engine = selectedEngine || fallback;
     const fuelType = needsManualFuelType ? normalizeFuelType(manualFuelType) : engine.fuelType;
@@ -82,6 +100,11 @@ export function VehicleSelector() {
       fuelType,
       fuelTypeConfidence: needsManualFuelType ? "low" : engine.confidence,
     };
+    if (!selectedEngine && !manualEngine.trim()) {
+      setWarning("Engine was not selected. Some diagnostic results may be less specific.");
+    } else {
+      setWarning("");
+    }
     setSelectedVehicle(vehicle);
   }
 
@@ -89,6 +112,8 @@ export function VehicleSelector() {
     <div className="card vehicle-selector">
       <div className="section-title"><span className="eyebrow">Start here</span><h2>Select your vehicle</h2></div>
       {error && <ErrorState message={error} />}
+      {warning && <div className="state warning">{warning}</div>}
+      <p className="muted">Vehicle lists are based on available catalog data. If your trim is missing, use VIN lookup.</p>
       <div className="form-grid">
         <label>Year<select value={year} onChange={(e) => setYear(e.target.value)}><option value="">Select year</option>{years.map((v) => <option key={v}>{v}</option>)}</select></label>
         <label>Make<select value={make} onChange={(e) => setMake(e.target.value)} disabled={!year}><option value="">Select make</option>{makes.map((v) => <option key={v}>{v}</option>)}</select></label>

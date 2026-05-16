@@ -8,3 +8,12 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
+  - type: web
+    name: vinfix
+    env: static
+    rootDir: web
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://autofixhelp-api.onrender.com

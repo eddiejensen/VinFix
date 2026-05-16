@@ -29,6 +29,8 @@ export interface SelectedVehicle {
   fuelType: FuelType;
   fuelTypeConfidence: Confidence;
   vin?: string;
+  image?: VehicleImage | null;
+  id?: string;
 }
 
 export interface VehicleImage {

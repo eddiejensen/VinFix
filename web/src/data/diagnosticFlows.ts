@@ -9,6 +9,8 @@ export interface FlowSummary {
   codes: string[];
   firstChecks: string[];
   commonSignals: string[];
+  toolsNeeded: string[];
+  safetyWarning: string;
   nodes: Record<string, FlowNode>;
 }
 
@@ -64,6 +66,8 @@ function makeFlow(
     codes,
     firstChecks,
     commonSignals,
+    toolsNeeded: ["OBD scanner", "multimeter", "basic hand tools", "service information"],
+    safetyWarning: "Work safely. Do not test moving parts, high voltage systems, fuel, or lifted vehicles without proper training and equipment.",
     nodes: {
       start: {
         question: "Can you reproduce the symptom right now?",

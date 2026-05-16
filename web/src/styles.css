@@ -80,5 +80,7 @@ button:disabled { opacity:.55; cursor:not-allowed; }
 .state { padding:12px 14px; border-radius:14px; font-weight:800; margin:12px 0; }
 .state.error { background:#fee2e2; color:#991b1b; }
 .state.loading { background:#eff6ff; color:#1e40af; }
+.state.warning { background:#fff7ed; color:#9a3412; }
+.photo-preview { width:100%; max-height:260px; object-fit:cover; border-radius:18px; border:1px solid var(--line); margin:12px 0; }
 .mobile-tabs { display:none; }
 @media (max-width: 980px) { .app-shell { grid-template-columns:1fr; } .sidebar { display:none; } .main-area { border-radius:0; } main { padding:18px; padding-bottom:96px; } .hero-panel { grid-template-columns:1fr; padding:22px; } .feature-grid, .flow-grid, .diagnostic-workspace { grid-template-columns:1fr; } .form-grid, .vehicle-detail-grid { grid-template-columns:1fr; } .selected-vehicle { align-items:flex-start; } .mobile-tabs { display:grid; grid-template-columns:repeat(5,1fr); gap:4px; position:fixed; left:0; right:0; bottom:0; background:#fff; border-top:1px solid var(--line); padding:8px; z-index:10; } .mobile-tabs a { display:grid; gap:2px; text-align:center; text-decoration:none; color:#475569; font-weight:800; font-size:11px; padding:8px 4px; border-radius:12px; } .mobile-tabs a span { font-size:16px; } .mobile-tabs a.active { background:#eff6ff; color:#1d4ed8; } .topbar { position:static; padding:12px; } }

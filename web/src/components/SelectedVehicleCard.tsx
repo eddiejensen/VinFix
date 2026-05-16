@@ -39,7 +39,7 @@ export function SelectedVehicleCard({ vehicle, compact = false }: { vehicle: Sel
     return (
       <div className="selected-vehicle empty">
         <strong>No vehicle selected</strong>
-        <span>Select a vehicle on the home page to unlock vehicle aware diagnosis.</span>
+        <span>Select a vehicle to personalize diagnostics across VinFix.</span>
       </div>
     );
   }

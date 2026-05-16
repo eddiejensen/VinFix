@@ -10,16 +10,25 @@ const links = [
   ["/profile", "Profile", "👤"],
 ];
 
+const secondaryLinks = [
+  ["/garage", "Garage", "🚗"],
+  ["/todos", "To-Dos", "✅"],
+  ["/costs", "Costs", "💵"],
+];
+
 export function AppLayout() {
   const { selectedVehicle } = useVehicle();
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand"><span>VF</span><div><strong>VinFix</strong><small>Smart Diagnosis</small></div></div>
-        <nav>{links.map(([to, label, icon]) => <NavLink key={to} to={to}>{icon} {label}</NavLink>)}</nav>
+        <nav>
+          {links.map(([to, label, icon]) => <NavLink key={to} to={to}>{icon} {label}</NavLink>)}
+          {secondaryLinks.map(([to, label, icon]) => <NavLink key={to} to={to}>{icon} {label}</NavLink>)}
+        </nav>
       </aside>
       <div className="main-area">
-        <header className="topbar"><SelectedVehicleCard vehicle={selectedVehicle} compact /></header>
+        {selectedVehicle ? <header className="topbar"><SelectedVehicleCard vehicle={selectedVehicle} compact /></header> : null}
         <main><Outlet /></main>
       </div>
       <nav className="mobile-tabs">{links.map(([to, label, icon]) => <NavLink key={to} to={to}><span>{icon}</span>{label}</NavLink>)}</nav>

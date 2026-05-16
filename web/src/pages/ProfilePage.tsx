@@ -1,16 +1,18 @@
 import { SelectedVehicleCard } from "../components/SelectedVehicleCard";
 import { VehicleSelector } from "../components/VehicleSelector";
 import { useVehicle } from "../context/VehicleContext";
+import { PageTitle } from "../components/PageTitle";
 
 export function ProfilePage() {
   const { selectedVehicle, setSelectedVehicle } = useVehicle();
 
   return (
     <div className="page">
+      <PageTitle title="Profile" />
       <div className="page-head">
         <span className="eyebrow">Profile</span>
         <h1>Your VinFix setup</h1>
-        <p>Manage the vehicle saved in this browser. Account sync and repair history are planned next.</p>
+        <p>Select a vehicle to personalize diagnostics across VinFix.</p>
       </div>
       <SelectedVehicleCard vehicle={selectedVehicle} />
       {selectedVehicle ? (

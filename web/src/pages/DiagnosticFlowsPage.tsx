@@ -6,6 +6,8 @@ import { visibleFlowsForFuel } from "../data/diagnosticFlows";
 import { useVehicle } from "../context/VehicleContext";
 import { FuelTypeBadge } from "../components/FuelTypeBadge";
 import type { CommonIssue } from "../types";
+import { PageTitle } from "../components/PageTitle";
+import { makeId, readLocalArray, type RepairEntry, STORAGE_KEYS, vehicleKey, writeLocalArray } from "../utils/localData";
 
 export function DiagnosticFlowsPage() {
   const { selectedVehicle } = useVehicle();
@@ -15,6 +17,7 @@ export function DiagnosticFlowsPage() {
   const [answers, setAnswers] = useState<string[]>([]);
   const [issues, setIssues] = useState<CommonIssue[]>([]);
   const [issueError, setIssueError] = useState("");
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!flows.some((flow) => flow.id === activeFlowId)) {
@@ -53,6 +56,23 @@ export function DiagnosticFlowsPage() {
     setAnswers([]);
   }
 
+  function saveDiagnosticNote() {
+    if (!selectedVehicle || !activeFlow || !node || node.question) return;
+    const entries = readLocalArray<RepairEntry>(STORAGE_KEYS.diagnosticNotes);
+    writeLocalArray(STORAGE_KEYS.diagnosticNotes, [{
+      id: makeId("diag-note"),
+      vehicleKey: vehicleKey(selectedVehicle),
+      date: new Date().toISOString().slice(0, 10),
+      type: "diagnostic",
+      title: `${activeFlow.title}: ${node.resultTitle || "Diagnostic note"}`,
+      notes: `Answers: ${answers.join(" / ")}. Likely causes: ${(node.likelyCauses || []).join(", ")}. Next checks: ${(node.nextBestChecks || []).join(", ")}.`,
+      partsCost: 0,
+      laborCost: 0,
+      fixed: "unknown",
+    }, ...entries]);
+    setSaved(true);
+  }
+
   const matchedIssues = issues.filter((issue) => {
     const text = [issue.title, issue.issue, issue.component, issue.summary, issue.symptomTrigger, issue.commonFix]
       .filter(Boolean)
@@ -63,6 +83,7 @@ export function DiagnosticFlowsPage() {
 
   return (
     <div className="page">
+      <PageTitle title="Diagnostic Flows" />
       <div className="page-head">
         <span className="eyebrow">Flow charts</span>
         <h1>Guided diagnostic flows</h1>
@@ -96,6 +117,10 @@ export function DiagnosticFlowsPage() {
               </div>
               <FuelTypeBadge fuelType={selectedVehicle?.fuelType || "unknown"} />
             </div>
+            <div className="state warning">{activeFlow.safetyWarning}</div>
+            <h4>Tools needed</h4>
+            <div className="chip-row">{activeFlow.toolsNeeded.map((tool) => <span className="chip" key={tool}>{tool}</span>)}</div>
+            {activeFlow.codes.length ? <><h4>Related codes</h4><div className="chip-row">{activeFlow.codes.map((code) => <span className="badge orange" key={code}>{code}</span>)}</div></> : null}
 
             {node.question ? (
               <>
@@ -115,7 +140,9 @@ export function DiagnosticFlowsPage() {
                 <ul>{node.likelyCauses?.map((cause) => <li key={cause}>{cause}</li>)}</ul>
                 <h4>Next best checks</h4>
                 <ul>{node.nextBestChecks?.map((check) => <li key={check}>{check}</li>)}</ul>
+                <button className="primary" disabled={!selectedVehicle} onClick={saveDiagnosticNote} type="button">Save diagnostic note</button>
                 <button className="secondary" onClick={() => resetFlow()} type="button">Restart this flow</button>
+                {saved ? <div className="state loading">Diagnostic note saved on this device.</div> : null}
               </div>
             )}
 

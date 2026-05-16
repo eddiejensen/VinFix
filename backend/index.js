@@ -8,15 +8,35 @@ try {
 }
 
 const express = require('express');
+const cors = require('cors');
 const axios = require('axios');
-const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const { scoreDiagnosticSuggestions } = require('./learningEngine');
+const { getVehicleImage } = require('./vehicleImages');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.use(cors({
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-session-token']
+}));
+
 app.use(express.json());
+
+const CAR_API_BASE_URL = process.env.CAR_API_BASE_URL || 'https://carapi.app/api';
+const CAR_API_TOKEN = process.env.CAR_API_TOKEN || '';
+const CAR_API_SECRET = process.env.CAR_API_SECRET || '';
+const CARSCAN_BASE_URL = process.env.CARSCAN_BASE_URL || 'https://dev-api.carscan.com/v3.0';
+const CARSCAN_PARTNER_TOKEN = process.env.CARSCAN_PARTNER_TOKEN || '';
+const CARSCAN_AUTHORIZATION_KEY = process.env.CARSCAN_AUTHORIZATION_KEY || '';
+const NOMINATIM_BASE_URL = process.env.NOMINATIM_BASE_URL || 'https://nominatim.openstreetmap.org';
+const OVERPASS_BASE_URL = process.env.OVERPASS_BASE_URL || 'https://overpass-api.de/api/interpreter';
+const APP_CONTACT_EMAIL = process.env.APP_CONTACT_EMAIL || '';
+const CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 
 if (!dotenvLoaded) {
   const envPath = path.join(__dirname, '.env');
@@ -41,9 +61,9 @@ if (!dotenvLoaded) {
   }
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+const { initDatabase, useLocalDatabase } = require('./db');
+
+let pool;
 
 const CURRENT_YEAR = 2026;
 const MIN_YEAR = 1996;
@@ -98,121 +118,199 @@ const PASSENGER_VEHICLE_MAKES = [
 ];
 
 const MAKES_BY_YEAR_CACHE = new Map();
+const APP_CACHE = new Map();
+const CAR_API_AUTH_CACHE = {
+  token: '',
+  expiresAt: 0,
+};
 
-const FITMENT_OPTIONS = {
-  '2004|CHEVROLET|SUBURBAN': {
-    drivetrains: ['2WD', '4WD'],
-    engines: ['5.3L V8', '6.0L V8', '8.1L V8'],
+const BASIC_OBD_CODE_DATA = {
+  P0300: {
+    code: 'P0300',
+    description: 'Random or multiple cylinder misfire detected',
+    severity: 'high',
+    genericMeaning:
+      'The powertrain control module detected misfires across multiple cylinders rather than a single cylinder.',
+    possibleFixes: [
+      'Inspect ignition coils, spark plugs, and plug boots',
+      'Check fuel pressure and injector operation',
+      'Inspect for vacuum leaks or unmetered air',
+      'Check for restricted exhaust, including a clogged catalytic converter',
+    ],
+    disclaimer: 'These fixes are common starting points, not guaranteed repairs.',
   },
-  '2004|HONDA|ACCORD': {
-    drivetrains: ['FWD'],
-    engines: ['2.4L I4', '3.0L V6'],
+  P0171: {
+    code: 'P0171',
+    description: 'System too lean, bank 1',
+    severity: 'medium',
+    genericMeaning:
+      'The engine is running lean on bank 1, often because of extra air entering the engine or not enough fuel.',
+    possibleFixes: [
+      'Check for intake and vacuum leaks',
+      'Inspect the mass air flow sensor',
+      'Verify fuel delivery and fuel pressure',
+      'Inspect upstream oxygen sensor performance',
+    ],
+    disclaimer: 'These fixes are common starting points, not guaranteed repairs.',
   },
-  '2004|HONDA|CR-V': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['2.4L I4'],
+  P0420: {
+    code: 'P0420',
+    description: 'Catalyst system efficiency below threshold, bank 1',
+    severity: 'medium',
+    genericMeaning:
+      'The catalytic converter system on bank 1 is not performing as expected, or the oxygen sensor readings suggest that it is not.',
+    possibleFixes: [
+      'Confirm there is no misfire or fuel trim issue before replacing parts',
+      'Inspect for exhaust leaks ahead of the catalytic converter',
+      'Test upstream and downstream oxygen sensor behavior',
+      'Evaluate catalytic converter restriction or efficiency failure',
+    ],
+    disclaimer: 'These fixes are common starting points, not guaranteed repairs.',
   },
-  '2004|FORD|F-150': {
-    drivetrains: ['2WD', '4WD'],
-    engines: ['4.2L V6', '4.6L V8', '5.4L V8'],
+  P0442: {
+    code: 'P0442',
+    description: 'Evaporative emission system leak detected, small leak',
+    severity: 'low',
+    genericMeaning:
+      'The EVAP system detected a small leak, often from the gas cap, vent plumbing, or purge-related components.',
+    possibleFixes: [
+      'Check fuel cap seal and proper cap installation',
+      'Inspect EVAP hoses and vent lines for leaks',
+      'Test purge valve and vent valve operation',
+      'Smoke test the EVAP system if the leak is not obvious',
+    ],
+    disclaimer: 'These fixes are common starting points, not guaranteed repairs.',
   },
-  '*|CHEVROLET|EQUINOX': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['1.5L I4 Turbo', '2.0L I4 Turbo'],
-  },
-  '*|CHEVROLET|MALIBU': {
-    drivetrains: ['FWD'],
-    engines: ['1.5L I4 Turbo', '2.0L I4 Turbo'],
-  },
-  '*|CHEVROLET|SILVERADO 1500': {
-    drivetrains: ['2WD', '4WD'],
-    engines: ['2.7L I4 Turbo', '5.3L V8', '6.2L V8'],
-  },
-  '*|FORD|ESCAPE': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['1.5L I3 Turbo', '2.0L I4 Turbo', '2.5L Hybrid'],
-  },
-  '*|FORD|EXPLORER': {
-    drivetrains: ['RWD', '4WD'],
-    engines: ['2.3L I4 Turbo', '3.0L V6 Turbo'],
-  },
-  '*|FORD|F-150': {
-    drivetrains: ['2WD', '4WD'],
-    engines: ['2.7L V6 Turbo', '3.5L V6 Turbo', '5.0L V8'],
-  },
-  '*|HONDA|ACCORD': {
-    drivetrains: ['FWD'],
-    engines: ['1.5L I4 Turbo', '2.0L I4 Turbo', '2.0L Hybrid'],
-  },
-  '*|HONDA|CIVIC': {
-    drivetrains: ['FWD'],
-    engines: ['2.0L I4', '1.5L I4 Turbo'],
-  },
-  '*|HONDA|CR-V': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['1.5L I4 Turbo', '2.0L Hybrid'],
-  },
-  '*|HONDA|ODYSSEY': {
-    drivetrains: ['FWD'],
-    engines: ['3.5L V6'],
-  },
-  '*|HONDA|PILOT': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['3.5L V6'],
-  },
-  '*|HYUNDAI|SANTA FE': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['2.5L I4', '2.5L I4 Turbo', '1.6L Hybrid'],
-  },
-  '*|HYUNDAI|SONATA': {
-    drivetrains: ['FWD'],
-    engines: ['2.5L I4', '1.6L I4 Turbo', '2.0L Hybrid'],
-  },
-  '*|JEEP|GRAND CHEROKEE': {
-    drivetrains: ['RWD', '4WD'],
-    engines: ['3.6L V6', '5.7L V8'],
-  },
-  '*|JEEP|WRANGLER': {
-    drivetrains: ['4WD'],
-    engines: ['3.6L V6', '2.0L I4 Turbo'],
-  },
-  '*|NISSAN|ALTIMA': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['2.5L I4', '2.0L I4 Turbo'],
-  },
-  '*|NISSAN|ROGUE': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['1.5L I3 Turbo', '2.5L I4'],
-  },
-  '*|SUBARU|OUTBACK': {
-    drivetrains: ['AWD'],
-    engines: ['2.5L H4', '2.4L Turbo H4'],
-  },
-  '*|TOYOTA|4RUNNER': {
-    drivetrains: ['2WD', '4WD'],
-    engines: ['4.0L V6'],
-  },
-  '*|TOYOTA|CAMRY': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['2.5L I4', '3.5L V6', '2.5L Hybrid'],
-  },
-  '*|TOYOTA|COROLLA': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['2.0L I4', '1.8L Hybrid'],
-  },
-  '*|TOYOTA|HIGHLANDER': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['2.4L I4 Turbo', '2.5L Hybrid'],
-  },
-  '*|TOYOTA|RAV4': {
-    drivetrains: ['FWD', 'AWD'],
-    engines: ['2.5L I4', '2.5L Hybrid'],
-  },
-  '*|TOYOTA|TACOMA': {
-    drivetrains: ['2WD', '4WD'],
-    engines: ['2.7L I4', '3.5L V6', '2.4L I4 Turbo'],
+  P0455: {
+    code: 'P0455',
+    description: 'Evaporative emission system leak detected, gross leak',
+    severity: 'low',
+    genericMeaning:
+      'The EVAP system detected a large leak or no purge flow, often related to a missing cap or disconnected hose.',
+    possibleFixes: [
+      'Check that the fuel cap is present and tightened correctly',
+      'Inspect EVAP hoses for disconnections',
+      'Inspect the canister, vent valve, and purge system',
+      'Perform a smoke test if the issue is not obvious',
+    ],
+    disclaimer: 'These fixes are common starting points, not guaranteed repairs.',
   },
 };
+
+const VEHICLE_OPTIONS_DB = [
+  { year: '*', make: 'CHEVROLET', model: 'SUBURBAN', trim: 'LS', series: null, drivetrain: '2WD', engine: '5.3L V8 Flex Fuel' },
+  { year: '*', make: 'CHEVROLET', model: 'SUBURBAN', trim: 'LS', series: null, drivetrain: '4WD', engine: '5.3L V8 Flex Fuel' },
+  { year: '*', make: 'CHEVROLET', model: 'SUBURBAN', trim: 'LT', series: null, drivetrain: '2WD', engine: '5.3L V8 Flex Fuel' },
+  { year: '*', make: 'CHEVROLET', model: 'SUBURBAN', trim: 'LT', series: null, drivetrain: '4WD', engine: '5.3L V8 Flex Fuel' },
+  { year: '*', make: 'CHEVROLET', model: 'SUBURBAN', trim: 'Z71', series: null, drivetrain: '4WD', engine: '5.3L V8 Flex Fuel' },
+  { year: '*', make: 'CHEVROLET', model: 'SUBURBAN', trim: 'PREMIER', series: null, drivetrain: '4WD', engine: '6.2L V8' },
+  { year: '*', make: 'CHEVROLET', model: 'TAHOE', trim: 'LS', series: null, drivetrain: '2WD', engine: '5.3L V8 Flex Fuel' },
+  { year: '*', make: 'CHEVROLET', model: 'TAHOE', trim: 'LS', series: null, drivetrain: '4WD', engine: '5.3L V8 Flex Fuel' },
+  { year: '*', make: 'CHEVROLET', model: 'TAHOE', trim: 'Z71', series: null, drivetrain: '4WD', engine: '5.3L V8' },
+  { year: '*', make: 'CHEVROLET', model: 'EQUINOX', trim: 'LS', series: null, drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'CHEVROLET', model: 'EQUINOX', trim: 'LS', series: null, drivetrain: 'AWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'CHEVROLET', model: 'EQUINOX', trim: 'RS', series: null, drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'CHEVROLET', model: 'EQUINOX', trim: 'RS', series: null, drivetrain: 'AWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'CHEVROLET', model: 'MALIBU', trim: 'LS', series: null, drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'CHEVROLET', model: 'MALIBU', trim: 'LT', series: null, drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'CHEVROLET', model: 'SILVERADO 1500', trim: 'WT', series: null, drivetrain: '2WD', engine: '2.7L I4 Turbo' },
+  { year: '*', make: 'CHEVROLET', model: 'SILVERADO 1500', trim: 'WT', series: null, drivetrain: '4WD', engine: '2.7L I4 Turbo' },
+  { year: '*', make: 'CHEVROLET', model: 'SILVERADO 1500', trim: 'LT', series: null, drivetrain: '2WD', engine: '5.3L V8' },
+  { year: '*', make: 'CHEVROLET', model: 'SILVERADO 1500', trim: 'LT', series: null, drivetrain: '4WD', engine: '5.3L V8' },
+  { year: '*', make: 'CHEVROLET', model: 'SILVERADO 1500', trim: 'RST', series: null, drivetrain: '4WD', engine: '6.2L V8' },
+
+  { year: '2012', make: 'BMW', model: '6 SERIES', trim: '640i', series: null, drivetrain: 'RWD', engine: '3.0L Turbo Inline 6, 640i' },
+  { year: '2012', make: 'BMW', model: '6 SERIES', trim: '640d', series: null, drivetrain: 'RWD', engine: '3.0L Diesel Inline 6, 640d' },
+
+  { year: '*', make: 'HONDA', model: 'ACCORD', trim: 'LX', series: null, drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'ACCORD', trim: 'EX', series: null, drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'ACCORD', trim: 'SPORT', series: null, drivetrain: 'FWD', engine: '2.0L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'ACCORD', trim: 'TOURING', series: null, drivetrain: 'FWD', engine: '2.0L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'ACCORD', trim: 'HYBRID', series: null, drivetrain: 'FWD', engine: '2.0L Hybrid I4' },
+  { year: '*', make: 'HONDA', model: 'CIVIC', trim: 'LX', series: 'SEDAN', drivetrain: 'FWD', engine: '2.0L I4' },
+  { year: '*', make: 'HONDA', model: 'CIVIC', trim: 'SPORT', series: 'SEDAN', drivetrain: 'FWD', engine: '2.0L I4' },
+  { year: '*', make: 'HONDA', model: 'CIVIC', trim: 'EX', series: 'SEDAN', drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'CIVIC', trim: 'TOURING', series: 'SEDAN', drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'CR-V', trim: 'LX', series: null, drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'CR-V', trim: 'LX', series: null, drivetrain: 'AWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'CR-V', trim: 'EX', series: null, drivetrain: 'FWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'CR-V', trim: 'EX', series: null, drivetrain: 'AWD', engine: '1.5L I4 Turbo' },
+  { year: '*', make: 'HONDA', model: 'CR-V', trim: 'SPORT HYBRID', series: null, drivetrain: 'AWD', engine: '2.0L Hybrid I4' },
+  { year: '*', make: 'HONDA', model: 'PILOT', trim: 'SPORT', series: null, drivetrain: 'FWD', engine: '3.5L V6' },
+  { year: '*', make: 'HONDA', model: 'PILOT', trim: 'SPORT', series: null, drivetrain: 'AWD', engine: '3.5L V6' },
+  { year: '*', make: 'HONDA', model: 'PILOT', trim: 'TRAILSPORT', series: null, drivetrain: 'AWD', engine: '3.5L V6' },
+  { year: '*', make: 'HONDA', model: 'ODYSSEY', trim: 'EX-L', series: null, drivetrain: 'FWD', engine: '3.5L V6' },
+  { year: '*', make: 'HONDA', model: 'ODYSSEY', trim: 'TOURING', series: null, drivetrain: 'FWD', engine: '3.5L V6' },
+
+  { year: '*', make: 'FORD', model: 'F-150', trim: 'XL', series: null, drivetrain: '2WD', engine: '2.7L V6 Turbo' },
+  { year: '*', make: 'FORD', model: 'F-150', trim: 'XL', series: null, drivetrain: '4WD', engine: '2.7L V6 Turbo' },
+  { year: '*', make: 'FORD', model: 'F-150', trim: 'XLT', series: null, drivetrain: '2WD', engine: '3.5L V6 Turbo' },
+  { year: '*', make: 'FORD', model: 'F-150', trim: 'XLT', series: null, drivetrain: '4WD', engine: '3.5L V6 Turbo' },
+  { year: '*', make: 'FORD', model: 'F-150', trim: 'LARIAT', series: null, drivetrain: '4WD', engine: '5.0L V8' },
+  { year: '*', make: 'FORD', model: 'ESCAPE', trim: 'S', series: null, drivetrain: 'FWD', engine: '1.5L I3 Turbo' },
+  { year: '*', make: 'FORD', model: 'ESCAPE', trim: 'SE', series: null, drivetrain: 'AWD', engine: '2.0L I4 Turbo' },
+  { year: '*', make: 'FORD', model: 'ESCAPE', trim: 'HYBRID', series: null, drivetrain: 'AWD', engine: '2.5L Hybrid I4' },
+  { year: '*', make: 'FORD', model: 'EXPLORER', trim: 'XLT', series: null, drivetrain: 'RWD', engine: '2.3L I4 Turbo' },
+  { year: '*', make: 'FORD', model: 'EXPLORER', trim: 'XLT', series: null, drivetrain: '4WD', engine: '2.3L I4 Turbo' },
+  { year: '*', make: 'FORD', model: 'EXPLORER', trim: 'ST', series: null, drivetrain: '4WD', engine: '3.0L V6 Turbo' },
+  { year: '*', make: 'FORD', model: 'MUSTANG', trim: 'ECOBOOST', series: null, drivetrain: 'RWD', engine: '2.3L I4 Turbo' },
+  { year: '*', make: 'FORD', model: 'MUSTANG', trim: 'GT', series: null, drivetrain: 'RWD', engine: '5.0L V8' },
+  { year: '2006', make: 'FORD', model: 'SUPER DUTY', trim: 'F-250', series: null, drivetrain: '4WD', engine: '6.0L Power Stroke Diesel' },
+  { year: '2006', make: 'FORD', model: 'F-250 SUPER DUTY', trim: 'F-250', series: null, drivetrain: '4WD', engine: '6.0L Power Stroke Diesel' },
+
+  { year: '*', make: 'TOYOTA', model: 'CAMRY', trim: 'LE', series: null, drivetrain: 'FWD', engine: '2.5L I4' },
+  { year: '*', make: 'TOYOTA', model: 'CAMRY', trim: 'SE', series: null, drivetrain: 'FWD', engine: '2.5L I4' },
+  { year: '*', make: 'TOYOTA', model: 'CAMRY', trim: 'XSE', series: null, drivetrain: 'FWD', engine: '3.5L V6' },
+  { year: '*', make: 'TOYOTA', model: 'CAMRY', trim: 'HYBRID LE', series: null, drivetrain: 'FWD', engine: '2.5L Hybrid I4' },
+  { year: '*', make: 'TOYOTA', model: 'RAV4', trim: 'LE', series: null, drivetrain: 'FWD', engine: '2.5L I4' },
+  { year: '*', make: 'TOYOTA', model: 'RAV4', trim: 'LE', series: null, drivetrain: 'AWD', engine: '2.5L I4' },
+  { year: '*', make: 'TOYOTA', model: 'RAV4', trim: 'XLE', series: null, drivetrain: 'FWD', engine: '2.5L I4' },
+  { year: '*', make: 'TOYOTA', model: 'RAV4', trim: 'XLE', series: null, drivetrain: 'AWD', engine: '2.5L I4' },
+  { year: '*', make: 'TOYOTA', model: 'RAV4', trim: 'HYBRID XLE', series: null, drivetrain: 'AWD', engine: '2.5L Hybrid I4' },
+  { year: '*', make: 'TOYOTA', model: 'HIGHLANDER', trim: 'LE', series: null, drivetrain: 'FWD', engine: '2.4L I4 Turbo' },
+  { year: '*', make: 'TOYOTA', model: 'HIGHLANDER', trim: 'LE', series: null, drivetrain: 'AWD', engine: '2.4L I4 Turbo' },
+  { year: '*', make: 'TOYOTA', model: 'HIGHLANDER', trim: 'HYBRID XLE', series: null, drivetrain: 'AWD', engine: '2.5L Hybrid I4' },
+  { year: '*', make: 'TOYOTA', model: '4RUNNER', trim: 'SR5', series: null, drivetrain: '2WD', engine: '4.0L V6' },
+  { year: '*', make: 'TOYOTA', model: '4RUNNER', trim: 'SR5', series: null, drivetrain: '4WD', engine: '4.0L V6' },
+  { year: '*', make: 'TOYOTA', model: '4RUNNER', trim: 'TRD OFF-ROAD', series: null, drivetrain: '4WD', engine: '4.0L V6' },
+  { year: '*', make: 'TOYOTA', model: 'TACOMA', trim: 'SR', series: null, drivetrain: '2WD', engine: '2.4L I4 Turbo' },
+  { year: '*', make: 'TOYOTA', model: 'TACOMA', trim: 'SR5', series: null, drivetrain: '4WD', engine: '2.4L I4 Turbo' },
+  { year: '*', make: 'TOYOTA', model: 'TACOMA', trim: 'TRD OFF-ROAD', series: null, drivetrain: '4WD', engine: '2.4L I4 Turbo' },
+
+  { year: '2021', make: 'TESLA', model: 'MODEL 3', trim: 'Long Range', series: null, drivetrain: 'AWD', engine: 'Dual Motor Electric' },
+
+  { year: '*', make: 'NISSAN', model: 'ALTIMA', trim: 'S', series: null, drivetrain: 'FWD', engine: '2.5L I4' },
+  { year: '*', make: 'NISSAN', model: 'ALTIMA', trim: 'SV', series: null, drivetrain: 'FWD', engine: '2.5L I4' },
+  { year: '*', make: 'NISSAN', model: 'ALTIMA', trim: 'SV', series: null, drivetrain: 'AWD', engine: '2.5L I4' },
+  { year: '*', make: 'NISSAN', model: 'ALTIMA', trim: 'SR VC-TURBO', series: null, drivetrain: 'FWD', engine: '2.0L I4 Turbo' },
+  { year: '*', make: 'NISSAN', model: 'ROGUE', trim: 'S', series: null, drivetrain: 'FWD', engine: '1.5L I3 Turbo' },
+  { year: '*', make: 'NISSAN', model: 'ROGUE', trim: 'SV', series: null, drivetrain: 'FWD', engine: '1.5L I3 Turbo' },
+  { year: '*', make: 'NISSAN', model: 'ROGUE', trim: 'SV', series: null, drivetrain: 'AWD', engine: '1.5L I3 Turbo' },
+  { year: '*', make: 'NISSAN', model: 'FRONTIER', trim: 'S', series: null, drivetrain: '2WD', engine: '3.8L V6' },
+  { year: '*', make: 'NISSAN', model: 'FRONTIER', trim: 'SV', series: null, drivetrain: '4WD', engine: '3.8L V6' },
+
+  { year: '*', make: 'JEEP', model: 'WRANGLER', trim: 'SPORT', series: null, drivetrain: '4WD', engine: '3.6L V6' },
+  { year: '*', make: 'JEEP', model: 'WRANGLER', trim: 'WILLYS', series: null, drivetrain: '4WD', engine: '2.0L I4 Turbo' },
+  { year: '*', make: 'JEEP', model: 'GRAND CHEROKEE', trim: 'LAREDO', series: null, drivetrain: 'RWD', engine: '3.6L V6' },
+  { year: '*', make: 'JEEP', model: 'GRAND CHEROKEE', trim: 'LAREDO', series: null, drivetrain: '4WD', engine: '3.6L V6' },
+  { year: '*', make: 'JEEP', model: 'GRAND CHEROKEE', trim: 'OVERLAND', series: null, drivetrain: '4WD', engine: '5.7L V8' },
+
+  { year: '*', make: 'SUBARU', model: 'OUTBACK', trim: 'PREMIUM', series: null, drivetrain: 'AWD', engine: '2.5L H4' },
+  { year: '*', make: 'SUBARU', model: 'OUTBACK', trim: 'WILDERNESS', series: null, drivetrain: 'AWD', engine: '2.4L Turbo H4' },
+  { year: '*', make: 'SUBARU', model: 'FORESTER', trim: 'PREMIUM', series: null, drivetrain: 'AWD', engine: '2.5L H4' },
+  { year: '*', make: 'SUBARU', model: 'CROSSTREK', trim: 'SPORT', series: null, drivetrain: 'AWD', engine: '2.5L H4' },
+
+  { year: '*', make: 'HYUNDAI', model: 'SONATA', trim: 'SE', series: null, drivetrain: 'FWD', engine: '2.5L I4' },
+  { year: '*', make: 'HYUNDAI', model: 'SONATA', trim: 'N LINE', series: null, drivetrain: 'FWD', engine: '2.5L I4 Turbo' },
+  { year: '*', make: 'HYUNDAI', model: 'SONATA', trim: 'HYBRID LIMITED', series: null, drivetrain: 'FWD', engine: '2.0L Hybrid I4' },
+  { year: '*', make: 'HYUNDAI', model: 'SANTA FE', trim: 'SE', series: null, drivetrain: 'FWD', engine: '2.5L I4' },
+  { year: '*', make: 'HYUNDAI', model: 'SANTA FE', trim: 'XRT', series: null, drivetrain: 'AWD', engine: '2.5L I4' },
+  { year: '*', make: 'HYUNDAI', model: 'SANTA FE', trim: 'LIMITED', series: null, drivetrain: 'AWD', engine: '2.5L I4 Turbo' },
+
+  { year: '*', make: 'GMC', model: 'YUKON', trim: 'SLE', series: null, drivetrain: '2WD', engine: '5.3L V8' },
+  { year: '*', make: 'GMC', model: 'YUKON', trim: 'SLE', series: null, drivetrain: '4WD', engine: '5.3L V8' },
+  { year: '*', make: 'GMC', model: 'YUKON', trim: 'DENALI', series: null, drivetrain: '4WD', engine: '6.2L V8' },
+];
 
 const MODEL_ALIASES = {
   'CRV': 'CR-V',
@@ -300,6 +398,36 @@ function buildVehicleLabel(year, make, model) {
   return `${year} ${make} ${model}`;
 }
 
+function getGeoHeaders() {
+  const userAgent = APP_CONTACT_EMAIL
+    ? `Auto Fix Help/1.0 (${APP_CONTACT_EMAIL})`
+    : 'Auto Fix Help/1.0';
+
+  return {
+    Accept: 'application/json',
+    'User-Agent': userAgent,
+  };
+}
+
+function toRadians(value) {
+  return (value * Math.PI) / 180;
+}
+
+function calculateDistanceMiles(lat1, lon1, lat2, lon2) {
+  const earthRadiusMiles = 3958.8;
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusMiles * c;
+}
+
+function formatDistanceMiles(distance) {
+  return `${distance.toFixed(1)} miles`;
+}
+
 function buildRecallSourceUrl(campaignNumber) {
   return `https://www.nhtsa.gov/recalls?nhtsaid=${encodeURIComponent(campaignNumber)}`;
 }
@@ -348,28 +476,890 @@ function parseBooleanOrNull(value) {
   return null;
 }
 
-function resolveFitmentOptions(year, make, model) {
+function generateToken(bytes = 24) {
+  return crypto.randomBytes(bytes).toString('hex');
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const derivedKey = crypto
+    .pbkdf2Sync(password, salt, 100000, 64, 'sha512')
+    .toString('hex');
+
+  return `${salt}:${derivedKey}`;
+}
+
+function verifyPassword(password, storedHash = '') {
+  const [salt, originalHash] = String(storedHash).split(':');
+
+  if (!salt || !originalHash) {
+    return false;
+  }
+
+  const derivedHash = crypto
+    .pbkdf2Sync(password, salt, 100000, 64, 'sha512')
+    .toString('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(originalHash, 'hex'),
+    Buffer.from(derivedHash, 'hex')
+  );
+}
+
+function getCachedValue(key) {
+  const cached = APP_CACHE.get(key);
+
+  if (!cached) {
+    return null;
+  }
+
+  if (Date.now() > cached.expiresAt) {
+    APP_CACHE.delete(key);
+    return null;
+  }
+
+  return cached.value;
+}
+
+function setCachedValue(key, value, ttlMs = CACHE_TTL_MS) {
+  APP_CACHE.set(key, {
+    value,
+    expiresAt: Date.now() + ttlMs,
+  });
+
+  return value;
+}
+
+function buildCarApiCacheKey(endpoint, params = {}) {
+  const searchParams = new URLSearchParams();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      searchParams.append(key, String(value));
+    }
+  });
+
+  return `${endpoint}?${searchParams.toString()}`;
+}
+
+function getCarApiHeaders(jwt = '') {
+  return {
+    Accept: 'application/json',
+    ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
+  };
+}
+
+function getCarScanHeaders() {
+  return {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    authorization: CARSCAN_AUTHORIZATION_KEY,
+    'partner-token': CARSCAN_PARTNER_TOKEN,
+  };
+}
+
+function normalizeCarApiCollection(responseData) {
+  if (Array.isArray(responseData)) {
+    return responseData;
+  }
+
+  if (Array.isArray(responseData?.data)) {
+    return responseData.data;
+  }
+
+  if (Array.isArray(responseData?.results)) {
+    return responseData.results;
+  }
+
+  return [];
+}
+
+function buildCarApiFilters(filters = []) {
+  return JSON.stringify(
+    filters.filter((filter) => filter && filter.val !== undefined && filter.val !== null && filter.val !== '')
+  );
+}
+
+async function getCarApiJwt() {
+  if (!CAR_API_TOKEN || !CAR_API_SECRET) {
+    return '';
+  }
+
+  if (CAR_API_AUTH_CACHE.token && Date.now() < CAR_API_AUTH_CACHE.expiresAt) {
+    return CAR_API_AUTH_CACHE.token;
+  }
+
+  const response = await axios.post(
+    `${CAR_API_BASE_URL}/auth/login`,
+    {
+      api_token: CAR_API_TOKEN,
+      api_secret: CAR_API_SECRET,
+    },
+    {
+      headers: {
+        Accept: 'text/plain',
+        'Content-Type': 'application/json',
+      },
+    }
+  );
+
+  const token = typeof response.data === 'string' ? response.data.trim() : '';
+
+  if (!token) {
+    throw new Error('CarAPI authentication did not return a token');
+  }
+
+  CAR_API_AUTH_CACHE.token = token;
+  CAR_API_AUTH_CACHE.expiresAt = Date.now() + 1000 * 60 * 60 * 24 * 6;
+
+  return token;
+}
+
+async function carApiGet(endpoint, params = {}) {
+  const cacheKey = buildCarApiCacheKey(endpoint, params);
+  const cached = getCachedValue(cacheKey);
+
+  if (cached) {
+    return cached;
+  }
+
+  const jwt = await getCarApiJwt();
+
+  const response = await axios.get(`${CAR_API_BASE_URL}${endpoint}`, {
+    headers: getCarApiHeaders(jwt),
+    params,
+  });
+
+  return setCachedValue(cacheKey, response.data);
+}
+
+async function carScanGet(endpoint, params = {}, useCache = true) {
+  if (!CARSCAN_PARTNER_TOKEN || !CARSCAN_AUTHORIZATION_KEY) {
+    throw new Error('CarScan credentials are not configured');
+  }
+
+  const cacheKey = `carscan:${buildCarApiCacheKey(endpoint, params)}`;
+  const cached = useCache ? getCachedValue(cacheKey) : null;
+
+  if (cached) {
+    return cached;
+  }
+
+  const response = await axios.get(`${CARSCAN_BASE_URL}${endpoint}`, {
+    headers: getCarScanHeaders(),
+    params,
+  });
+
+  if (response.data?.message?.message === 'failed') {
+    throw new Error(response.data?.message?.message || 'CarScan request failed');
+  }
+
+  return useCache ? setCachedValue(cacheKey, response.data) : response.data;
+}
+
+function buildShopSpecialtyMatch(make = '', issue = '', tags = {}) {
+  const normalizedIssue = String(issue || '').toLowerCase();
+  const normalizedName = String(tags.name || '').toLowerCase();
+  const normalizedText = [
+    tags.description,
+    tags['service:vehicle:repair'],
+    tags['service:vehicle:diagnostics'],
+    tags.shop,
+    tags.amenity,
+    tags['repair'],
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (
+    normalizedIssue.includes('electrical') ||
+    normalizedIssue.includes('diagnostic') ||
+    normalizedName.includes('electric') ||
+    normalizedText.includes('diagnostic')
+  ) {
+    return {
+      specialty: 'Diagnostics and electrical',
+      matchReason: 'Good fit for diagnostic and electrical work',
+      specialtyScore: 3,
+    };
+  }
+
+  if (
+    normalizedIssue.includes('brake') ||
+    normalizedName.includes('brake') ||
+    normalizedText.includes('brake')
+  ) {
+    return {
+      specialty: 'Brake service',
+      matchReason: 'Good fit for brake-related work',
+      specialtyScore: 3,
+    };
+  }
+
+  if (make && normalizedName.includes(String(make).toLowerCase())) {
+    return {
+      specialty: `${make} service`,
+      matchReason: `Matches your ${make} vehicle`,
+      specialtyScore: 2,
+    };
+  }
+
+  return {
+    specialty: 'General auto repair',
+    matchReason: 'Local repair shop near your ZIP code',
+    specialtyScore: 1,
+  };
+}
+
+async function geocodeZipCode(zip) {
+  const cacheKey = `zipcode:${zip}`;
+  const cached = getCachedValue(cacheKey);
+
+  if (cached) {
+    return cached;
+  }
+
+  const response = await axios.get(`${NOMINATIM_BASE_URL}/search`, {
+    headers: getGeoHeaders(),
+    params: {
+      postalcode: zip,
+      countrycodes: 'us',
+      format: 'jsonv2',
+      limit: 1,
+    },
+  });
+
+  const match = Array.isArray(response.data) ? response.data[0] : null;
+
+  if (!match?.lat || !match?.lon) {
+    throw new Error('ZIP code lookup did not return coordinates');
+  }
+
+  return setCachedValue(cacheKey, {
+    lat: Number.parseFloat(match.lat),
+    lon: Number.parseFloat(match.lon),
+    displayName: match.display_name || zip,
+  });
+}
+
+async function findShopsNearZip(zip, options = {}) {
+  const { make = '', issue = '' } = options;
+  const { lat, lon } = await geocodeZipCode(zip);
+  const query = `
+[out:json][timeout:25];
+(
+  node(around:25000,${lat},${lon})["shop"="car_repair"];
+  way(around:25000,${lat},${lon})["shop"="car_repair"];
+  relation(around:25000,${lat},${lon})["shop"="car_repair"];
+  node(around:25000,${lat},${lon})["amenity"="car_repair"];
+  way(around:25000,${lat},${lon})["amenity"="car_repair"];
+  relation(around:25000,${lat},${lon})["amenity"="car_repair"];
+);
+out center tags;
+  `.trim();
+
+  const response = await axios.post(OVERPASS_BASE_URL, query, {
+    headers: {
+      ...getGeoHeaders(),
+      'Content-Type': 'text/plain',
+    },
+  });
+
+  const elements = Array.isArray(response.data?.elements) ? response.data.elements : [];
+
+  return elements
+    .map((element) => {
+      const tags = element.tags || {};
+      const latitude = element.lat || element.center?.lat;
+      const longitude = element.lon || element.center?.lon;
+
+      if (!latitude || !longitude || !tags.name) {
+        return null;
+      }
+
+      const specialtyMatch = buildShopSpecialtyMatch(make, issue, tags);
+      const distanceMiles = calculateDistanceMiles(lat, lon, latitude, longitude);
+      const metadataScore = [
+        tags.website,
+        tags.phone,
+        tags['contact:phone'],
+        tags.opening_hours,
+      ].filter(Boolean).length;
+
+      return {
+        id: `${element.type}-${element.id}`,
+        name: tags.name,
+        rating: null,
+        distance: formatDistanceMiles(distanceMiles),
+        distanceValue: distanceMiles,
+        specialty: specialtyMatch.specialty,
+        matchReason: specialtyMatch.matchReason,
+        zipCode: zip,
+        sourceName: 'OpenStreetMap shop data',
+        sourceUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`,
+        specialtyScore: specialtyMatch.specialtyScore,
+        metadataScore,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (b.specialtyScore !== a.specialtyScore) {
+        return b.specialtyScore - a.specialtyScore;
+      }
+
+      if (b.metadataScore !== a.metadataScore) {
+        return b.metadataScore - a.metadataScore;
+      }
+
+      return a.distanceValue - b.distanceValue;
+    })
+    .slice(0, 8)
+    .map(({ distanceValue, specialtyScore, metadataScore, ...shop }) => shop);
+}
+
+function buildEngineLabelFromCarApi(engineData = {}) {
+  const size = engineData.size ? `${engineData.size}L` : '';
+  const cylinders = engineData.cylinders || '';
+  const engineType = engineData.engine_type || '';
+  const fuelType = engineData.fuel_type || '';
+
+  const pieces = [size, cylinders]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+
+  if (!pieces) {
+    return [engineType, fuelType].filter(Boolean).join(', ').trim();
+  }
+
+  if (fuelType && /e85|flex-fuel/i.test(fuelType)) {
+    return `${pieces} Flex Fuel`;
+  }
+
+  if (engineType && /hybrid/i.test(engineType)) {
+    return `${pieces} Hybrid`;
+  }
+
+  return pieces;
+}
+
+const VALID_FUEL_TYPES = new Set([
+  'gasoline',
+  'diesel',
+  'hybrid',
+  'plug_in_hybrid',
+  'electric',
+  'flex_fuel',
+  'unknown',
+]);
+
+function normalizeFuelType(value) {
+  const normalized = String(value || '').toLowerCase().replace(/[\s-]+/g, '_');
+  if (normalized === 'gas' || normalized === 'petrol') return 'gasoline';
+  if (normalized === 'phev' || normalized === 'plug_in' || normalized === 'plug-in_hybrid') return 'plug_in_hybrid';
+  if (normalized === 'ev' || normalized === 'bev') return 'electric';
+  if (normalized === 'flex' || normalized === 'flexfuel' || normalized === 'e85') return 'flex_fuel';
+  return VALID_FUEL_TYPES.has(normalized) ? normalized : 'unknown';
+}
+
+function inferFuelTypeFromEngineText(...values) {
+  const text = values.filter(Boolean).join(' ').toLowerCase();
+  if (!text.trim()) return { fuelType: 'unknown', confidence: 'low' };
+  if (/dual motor|electric|bev|ev\b|battery electric|tesla/.test(text)) {
+    return { fuelType: 'electric', confidence: 'high' };
+  }
+  if (/plug[-\s]?in|phev/.test(text)) {
+    return { fuelType: 'plug_in_hybrid', confidence: 'high' };
+  }
+  if (/flex fuel|flex-fuel|e85|ffv/.test(text)) {
+    return { fuelType: 'flex_fuel', confidence: 'high' };
+  }
+  if (/diesel|duramax|power stroke|powerstroke|cummins|tdi|ecodiesel|bluetech|640d|\bd\b/.test(text)) {
+    return { fuelType: 'diesel', confidence: 'high' };
+  }
+  if (/hybrid/.test(text)) {
+    return { fuelType: 'hybrid', confidence: 'high' };
+  }
+  if (/turbo|v6|v8|v10|v12|i3|i4|i5|i6|inline|cylinder|gasoline|640i|\bi\b/.test(text)) {
+    return { fuelType: 'gasoline', confidence: 'high' };
+  }
+  return { fuelType: 'unknown', confidence: 'low' };
+}
+
+function normalizeEngineOption(engineOption, vehicle = {}) {
+  const raw =
+    typeof engineOption === 'string'
+      ? { label: engineOption, value: engineOption }
+      : engineOption || {};
+  const label = String(raw.label || raw.value || raw.engine || '').trim();
+  const value = String(raw.value || label).trim();
+  const inferred = inferFuelTypeFromEngineText(label, raw.engineCode, vehicle.trim, vehicle.model);
+  const fuelType = normalizeFuelType(raw.fuelType || raw.fuel_type || inferred.fuelType);
+
+  return {
+    label,
+    value,
+    engineCode: raw.engineCode || raw.engine_code || '',
+    fuelType,
+    confidence: raw.confidence || (fuelType === inferred.fuelType ? inferred.confidence : 'high'),
+    source: raw.source || 'engineOption',
+  };
+}
+
+function sortEngineOptions(options = []) {
+  return options
+    .filter((option) => option.label && option.value)
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+function buildEngineLabelFromVpicValues(values = {}) {
+  const litersRaw = values.displacementL || '';
+  const litersNumber = Number.parseFloat(litersRaw);
+  const liters = Number.isNaN(litersNumber) ? '' : `${litersNumber.toFixed(1)}L`;
+  const cylindersRaw = String(values.cylinders || '').trim();
+  const configurationRaw = String(values.configuration || '').trim().toLowerCase();
+  const fuelTypeRaw = String(values.fuelType || '').trim().toLowerCase();
+
+  let cylinderLabel = '';
+
+  if (cylindersRaw) {
+    if (configurationRaw.includes('v')) {
+      cylinderLabel = `V${cylindersRaw}`;
+    } else if (configurationRaw.includes('in-line') || configurationRaw.includes('inline')) {
+      cylinderLabel = `I${cylindersRaw}`;
+    } else if (configurationRaw.includes('flat')) {
+      cylinderLabel = `H${cylindersRaw}`;
+    } else {
+      cylinderLabel = `${cylindersRaw} cyl`;
+    }
+  } else if (configurationRaw === 'v-shaped') {
+    cylinderLabel = 'V engine';
+  }
+
+  const base = [liters, cylinderLabel].filter(Boolean).join(' ').trim();
+
+  if (!base && values.configuration) {
+    return values.configuration;
+  }
+
+  if (fuelTypeRaw.includes('flex') || fuelTypeRaw.includes('e85')) {
+    return `${base} Flex Fuel`.trim();
+  }
+
+  if (fuelTypeRaw.includes('hybrid')) {
+    return `${base} Hybrid`.trim();
+  }
+
+  if (fuelTypeRaw.includes('diesel')) {
+    return `${base} Diesel`.trim();
+  }
+
+  return base || null;
+}
+
+function buildTransmissionLabelFromVpic(value) {
+  const normalized = String(value || '').trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (/automatic/i.test(normalized)) {
+    return normalized.replace(/\btransmission\b/i, '').trim();
+  }
+
+  if (/manual/i.test(normalized) || /cvt/i.test(normalized)) {
+    return normalized.replace(/\btransmission\b/i, '').trim();
+  }
+
+  return normalized;
+}
+
+function buildTrimPackageLabel(series, trim) {
+  const label = [trim, series].filter(Boolean).join(' ').trim();
+  return label || trim || series || null;
+}
+
+function formatDriveTypeLabel(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized === 'front wheel drive') {
+    return 'FWD';
+  }
+
+  if (normalized === 'rear wheel drive') {
+    return 'RWD';
+  }
+
+  if (normalized === 'all wheel drive') {
+    return 'AWD';
+  }
+
+  if (normalized === 'four wheel drive') {
+    return '4WD';
+  }
+
+  return value;
+}
+
+function formatTrimRecord(trimRecord = {}) {
+  const submodel = trimRecord.submodel || trimRecord.trim || '';
+  const trim = trimRecord.trim || submodel || '';
+  const label = [submodel, trim !== submodel ? trim : ''].filter(Boolean).join(' ').trim();
+
+  return {
+    id: trimRecord.id || trimRecord.submodel_id || trimRecord.trim_id || label,
+    trim: trim || label,
+    submodel: submodel || null,
+    label: label || trim || submodel || 'Base',
+    description: trimRecord.description || '',
+  };
+}
+
+function buildVehicleOptionMatrixFromCarApi(trimRecords = [], engineRecords = []) {
+  const trims = sortStrings(
+    Array.from(new Set(trimRecords.map((record) => formatTrimRecord(record).label).filter(Boolean)))
+  );
+
+  const engineMap = new Map();
+  const drivetrains = [];
+  const transmissions = [];
+
+  engineRecords.forEach((record) => {
+    const engineLabel = buildEngineLabelFromCarApi(record);
+    const driveLabel = formatDriveTypeLabel(record.drive_type || record.drivetrain || '');
+    const transmissionLabel = record.transmission || '';
+
+    if (engineLabel) {
+      const option = normalizeEngineOption(
+        {
+          label: engineLabel,
+          value: engineLabel,
+          engineCode: record.engine_code || record.engineCode || '',
+          fuelType: record.fuel_type,
+          confidence: record.fuel_type ? 'high' : undefined,
+          source: 'engineOption',
+        },
+        record
+      );
+      engineMap.set(option.value, option);
+    }
+
+    if (driveLabel) {
+      drivetrains.push(driveLabel);
+    }
+
+    if (transmissionLabel) {
+      transmissions.push(transmissionLabel);
+    }
+  });
+
+  return {
+    trims,
+    engines: sortEngineOptions(Array.from(engineMap.values())),
+    drivetrains: sortStrings(Array.from(new Set(drivetrains))),
+    transmissions: sortStrings(Array.from(new Set(transmissions))),
+  };
+}
+
+async function fetchCarApiYears() {
+  const data = await carApiGet('/years');
+  const years = normalizeCarApiCollection(data)
+    .map((value) => String(value))
+    .filter(Boolean);
+
+  return years.length > 0 ? sortStrings(Array.from(new Set(years))).reverse() : YEARS;
+}
+
+async function fetchCarApiMakesByYear(year) {
+  const filters = buildCarApiFilters([{ field: 'year', op: '=', val: Number.parseInt(year, 10) }]);
+  const data = await carApiGet('/makes', {
+    sort: 'name',
+    direction: 'asc',
+    json: filters,
+    limit: 1000,
+  });
+
+  return sortStrings(
+    Array.from(
+      new Set(
+        normalizeCarApiCollection(data)
+          .map((item) => item.name || item.make || item)
+          .filter(Boolean)
+      )
+    )
+  );
+}
+
+async function fetchCarApiModelsByYearMake(year, make) {
+  const filters = buildCarApiFilters([
+    { field: 'year', op: '=', val: Number.parseInt(year, 10) },
+    { field: 'make', op: '=', val: make },
+  ]);
+  const data = await carApiGet('/models', {
+    sort: 'name',
+    direction: 'asc',
+    json: filters,
+    limit: 1000,
+  });
+
+  return sortStrings(
+    Array.from(
+      new Set(
+        normalizeCarApiCollection(data)
+          .map((item) => item.name || item.model || item)
+          .filter(Boolean)
+      )
+    )
+  );
+}
+
+async function fetchCarApiTrimRecords(year, make, model) {
+  const filters = buildCarApiFilters([
+    { field: 'year', op: '=', val: Number.parseInt(year, 10) },
+    { field: 'make', op: '=', val: make },
+    { field: 'model', op: '=', val: model },
+  ]);
+  const data = await carApiGet('/trims', {
+    sort: 'trim',
+    direction: 'asc',
+    json: filters,
+    limit: 1000,
+  });
+
+  return normalizeCarApiCollection(data);
+}
+
+async function fetchCarApiEngineRecords(year, make, model, trim = '') {
+  const filters = [
+    { field: 'year', op: '=', val: Number.parseInt(year, 10) },
+    { field: 'make', op: '=', val: make },
+    { field: 'model', op: '=', val: model },
+  ];
+
+  if (trim) {
+    filters.push({ field: 'trim', op: '=', val: trim });
+  }
+
+  const data = await carApiGet('/engines', {
+    json: buildCarApiFilters(filters),
+    limit: 1000,
+  });
+
+  return normalizeCarApiCollection(data);
+}
+
+function buildVehicleSpecificObdNotes(code, vehicle) {
+  if (!vehicle?.make || !vehicle?.model || !vehicle?.year) {
+    return '';
+  }
+
+  return `Vehicle context, ${vehicle.year} ${vehicle.make} ${vehicle.model}${vehicle.engine ? `, ${vehicle.engine}` : ''}${vehicle.drivetrain ? `, ${vehicle.drivetrain}` : ''}. Use this as a starting point, not a guaranteed diagnosis.`;
+}
+
+function getDifficultyLabel(value) {
+  const difficulty = Number.parseInt(value, 10);
+
+  if (!difficulty) {
+    return null;
+  }
+
+  if (difficulty <= 2) {
+    return 'Easy';
+  }
+
+  if (difficulty === 3) {
+    return 'Moderate';
+  }
+
+  return 'Hard';
+}
+
+function normalizeCostValue(value) {
+  const parsed = Number.parseFloat(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function getLatestMileageFromHistoryEntries(historyEntries = []) {
+  const entryWithMileage = historyEntries.find((entry) => entry?.mileage);
+  return entryWithMileage?.mileage ? Number.parseInt(entryWithMileage.mileage, 10) : null;
+}
+
+function mapUrgencyToSeverity(urgency, description = '') {
+  const numericUrgency = Number.parseInt(urgency, 10);
+
+  if (!Number.isNaN(numericUrgency)) {
+    if (numericUrgency >= 3) {
+      return 'high';
+    }
+
+    if (numericUrgency === 2) {
+      return 'medium';
+    }
+
+    return 'low';
+  }
+
+  return inferObdSeverity('', description);
+}
+
+function buildFallbackDiagnosticPayload(code, vehicle = {}, descriptionOverride = '') {
+  const normalizedCode = String(code || '').trim().toUpperCase();
+  const fallbackCode = BASIC_OBD_CODE_DATA[normalizedCode];
+  const definition =
+    descriptionOverride ||
+    fallbackCode?.description ||
+    `Generic OBD-II explanation for ${normalizedCode}`;
+  const severity = fallbackCode?.severity || inferObdSeverity(normalizedCode, definition);
+  const possibleFixes = buildPossibleFixesForCode(normalizedCode, definition);
+
+  return {
+    code: normalizedCode,
+    definition,
+    description:
+      fallbackCode?.genericMeaning ||
+      'This is a generic OBD-II trouble code. The exact root cause can vary by vehicle and symptom pattern.',
+    severity,
+    severity_color: getSeverityColorLabel(severity),
+    manufacturer_specific_meaning:
+      vehicle.make && vehicle.model
+        ? `${vehicle.make} ${vehicle.model} may use this code in a slightly different diagnostic path, so vehicle-specific testing is still important.`
+        : null,
+    possible_fixes: possibleFixes,
+    repair_options: possibleFixes.map((item) => ({
+      title: item,
+      urgency_desc: null,
+      total_cost: null,
+      difficulty: null,
+      difficulty_label: null,
+      tsb_count: 0,
+    })),
+    difficulty: null,
+    difficulty_label: null,
+    estimated_cost: null,
+    notes: [
+      buildVehicleSpecificObdNotes(normalizedCode, vehicle),
+      'These are possible causes and not guaranteed fixes.',
+    ].filter(Boolean),
+    disclaimer: 'These are possible causes and not guaranteed fixes',
+    source_name: fallbackCode ? 'Auto Fix Help fallback OBD dataset' : 'Generic OBD-II fallback',
+    source_url: 'https://carapi.app/features/obd-code-api',
+  };
+}
+
+function normalizeCarScanCodeResponse(responseData = {}, normalizedCode = '') {
+  const codes = Array.isArray(responseData?.data?.codes) ? responseData.data.codes : [];
+  return codes.find((item) => String(item.code || '').toUpperCase() === normalizedCode) || null;
+}
+
+function normalizeCarScanDiagResponse(responseData = {}) {
+  return responseData?.data && typeof responseData.data === 'object' ? responseData.data : null;
+}
+
+function normalizeCarScanRepairResponse(responseData = {}) {
+  const data = responseData?.data;
+
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  return [];
+}
+
+function getSeverityColorLabel(severity) {
+  if (severity === 'high') {
+    return '#dc2626';
+  }
+
+  if (severity === 'medium') {
+    return '#f59e0b';
+  }
+
+  return '#2563eb';
+}
+
+function inferObdSeverity(code, description = '') {
+  const normalizedCode = String(code || '').toUpperCase();
+  const normalizedDescription = String(description || '').toLowerCase();
+
+  if (
+    normalizedCode.startsWith('P03') ||
+    normalizedCode === 'P0420' ||
+    normalizedDescription.includes('misfire')
+  ) {
+    return 'high';
+  }
+
+  if (
+    normalizedCode.startsWith('P01') ||
+    normalizedCode.startsWith('P04') ||
+    normalizedDescription.includes('catalyst') ||
+    normalizedDescription.includes('fuel')
+  ) {
+    return 'medium';
+  }
+
+  return 'low';
+}
+
+function buildPossibleFixesForCode(code, description = '') {
+  const normalizedCode = String(code || '').toUpperCase();
+  const normalizedDescription = String(description || '').toLowerCase();
+  const basicRecord = BASIC_OBD_CODE_DATA[normalizedCode];
+
+  if (basicRecord?.possibleFixes?.length) {
+    return basicRecord.possibleFixes;
+  }
+
+  if (normalizedDescription.includes('misfire')) {
+    return [
+      'Inspect spark plugs, coils, and ignition wiring',
+      'Check for fuel delivery issues',
+      'Check compression and mechanical timing if the problem persists',
+    ];
+  }
+
+  if (normalizedDescription.includes('lean')) {
+    return [
+      'Check for intake leaks and vacuum leaks',
+      'Inspect the mass air flow sensor',
+      'Verify fuel pressure and injector delivery',
+    ];
+  }
+
+  if (normalizedDescription.includes('catalyst')) {
+    return [
+      'Check for misfires or fuel trim problems before replacing converter parts',
+      'Inspect oxygen sensor operation',
+      'Inspect for exhaust leaks and converter restriction',
+    ];
+  }
+
+  return [
+    'Confirm the code with a scan tool and freeze frame data',
+    'Inspect related wiring, connectors, and obvious component faults',
+    'Use vehicle-specific service information before replacing parts',
+  ];
+}
+
+function buildTrimLabel(entry) {
+  return [entry.trim, entry.series].filter(Boolean).join(' ').trim();
+}
+
+function resolveVehicleOptionRecords(year, make, model) {
   const normalizedYear = normalizeText(year);
   const normalizedMake = normalizeText(make);
   const normalizedModel = normalizeModel(model);
-  const specificKey = `${normalizedYear}|${normalizedMake}|${normalizedModel}`;
-  const genericKey = `*|${normalizedMake}|${normalizedModel}`;
-
-  if (FITMENT_OPTIONS[specificKey]) {
-    return FITMENT_OPTIONS[specificKey];
-  }
-
-  if (FITMENT_OPTIONS[genericKey]) {
-    return FITMENT_OPTIONS[genericKey];
-  }
-
   const requestedCanonicalModel = canonicalizeModel(normalizedModel);
 
-  const matchingEntry = Object.entries(FITMENT_OPTIONS).find(([key]) => {
-    const [entryYear, entryMake, entryModel] = key.split('|');
-    const canonicalEntryModel = canonicalizeModel(entryModel);
-    const yearMatches = entryYear === '*' || entryYear === normalizedYear;
-    const makeMatches = entryMake === normalizedMake;
+  return VEHICLE_OPTIONS_DB.filter((entry) => {
+    const canonicalEntryModel = canonicalizeModel(entry.model);
+    const yearMatches = entry.year === '*' || normalizeText(entry.year) === normalizedYear;
+    const makeMatches = normalizeText(entry.make) === normalizedMake;
     const modelMatches =
       requestedCanonicalModel === canonicalEntryModel ||
       requestedCanonicalModel.startsWith(canonicalEntryModel) ||
@@ -377,8 +1367,48 @@ function resolveFitmentOptions(year, make, model) {
 
     return yearMatches && makeMatches && modelMatches;
   });
+}
 
-  return matchingEntry ? matchingEntry[1] : { drivetrains: [], engines: [] };
+function resolveFitmentOptions(year, make, model, selectedTrim = '') {
+  const matchingRecords = resolveVehicleOptionRecords(year, make, model);
+
+  if (matchingRecords.length === 0) {
+    return {
+      trims: [],
+      drivetrains: [],
+      engines: [],
+    };
+  }
+
+  const normalizedSelectedTrim = normalizeText(selectedTrim);
+  const filteredRecords =
+    normalizedSelectedTrim
+      ? matchingRecords.filter((entry) => normalizeText(buildTrimLabel(entry)) === normalizedSelectedTrim)
+      : matchingRecords;
+
+  const workingRecords = filteredRecords.length > 0 ? filteredRecords : matchingRecords;
+
+  return {
+    trims: sortStrings(workingRecords.map((entry) => buildTrimLabel(entry)).filter(Boolean)),
+    drivetrains: sortStrings(workingRecords.map((entry) => entry.drivetrain).filter(Boolean)),
+    engines: sortEngineOptions(
+      Array.from(
+        new Map(
+          workingRecords
+            .map((entry) =>
+              normalizeEngineOption(entry.engine, {
+                year,
+                make,
+                model,
+                trim: buildTrimLabel(entry),
+              })
+            )
+            .filter((option) => option.label && option.value)
+            .map((option) => [option.value, option])
+        ).values()
+      )
+    ),
+  };
 }
 
 async function fetchModelsForMakeYear(make, year) {
@@ -591,9 +1621,42 @@ function getResponseText(responseData) {
 
 async function initializeDatabase() {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS auth_users (
+      id SERIAL PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      full_name TEXT,
+      plan TEXT NOT NULL DEFAULT 'free',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free';
+    CREATE TABLE IF NOT EXISTS ai_usage (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES auth_users(id) ON DELETE CASCADE,
+      guest_session_token TEXT,
+      used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      month_year TEXT NOT NULL
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      id SERIAL PRIMARY KEY,
+      session_token TEXT UNIQUE NOT NULL,
+      user_id INT REFERENCES auth_users(id) ON DELETE CASCADE,
+      session_type TEXT NOT NULL DEFAULT 'guest',
+      guest_label TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS vehicles (
       id SERIAL PRIMARY KEY,
       vin TEXT UNIQUE,
+      owner_user_id INT REFERENCES auth_users(id) ON DELETE SET NULL,
+      owner_guest_session_token TEXT,
       make TEXT,
       manufacturer TEXT,
       model TEXT,
@@ -606,7 +1669,10 @@ async function initializeDatabase() {
       plant_state TEXT,
       plant_country TEXT,
       drivetrain TEXT,
+      transmission TEXT,
       engine TEXT,
+      fuel_type TEXT,
+      fuel_type_confidence TEXT,
       zip_code TEXT,
       purchase_price NUMERIC(12,2) NOT NULL DEFAULT 0,
       current_kbb_value NUMERIC(12,2) NOT NULL DEFAULT 0,
@@ -616,8 +1682,17 @@ async function initializeDatabase() {
 
   await pool.query(`
     ALTER TABLE vehicles
+    ADD COLUMN IF NOT EXISTS owner_user_id INT REFERENCES auth_users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS owner_guest_session_token TEXT,
     ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(12,2) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS current_kbb_value NUMERIC(12,2) NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS current_kbb_value NUMERIC(12,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS transmission TEXT,
+    ADD COLUMN IF NOT EXISTS fuel_type TEXT,
+    ADD COLUMN IF NOT EXISTS fuel_type_confidence TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE vehicles DROP CONSTRAINT IF EXISTS vehicles_vin_key;
   `);
 
   await pool.query(`
@@ -661,6 +1736,81 @@ async function initializeDatabase() {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS vehicle_images (
+      id SERIAL PRIMARY KEY,
+      year TEXT,
+      make TEXT NOT NULL,
+      model TEXT NOT NULL,
+      trim TEXT,
+      title TEXT,
+      image_url TEXT,
+      thumbnail_url TEXT,
+      source TEXT,
+      license TEXT,
+      author TEXT,
+      attribution_url TEXT,
+      confidence TEXT,
+      match_type TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS diagnostic_sessions (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES auth_users(id) ON DELETE SET NULL,
+      vehicle_id INT REFERENCES vehicles(id) ON DELETE SET NULL,
+      flow_id TEXT,
+      symptom_text TEXT,
+      codes JSONB NOT NULL DEFAULT '[]'::jsonb,
+      selected_vehicle_year TEXT,
+      selected_vehicle_make TEXT,
+      selected_vehicle_model TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS diagnostic_answers (
+      id SERIAL PRIMARY KEY,
+      session_id INT NOT NULL REFERENCES diagnostic_sessions(id) ON DELETE CASCADE,
+      step_id TEXT,
+      question TEXT,
+      answer TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS diagnostic_suggestions (
+      id SERIAL PRIMARY KEY,
+      session_id INT NOT NULL REFERENCES diagnostic_sessions(id) ON DELETE CASCADE,
+      cause TEXT NOT NULL,
+      score INT NOT NULL DEFAULT 0,
+      reason TEXT,
+      related_issue_id TEXT,
+      related_flow_id TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS confirmed_fixes (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES auth_users(id) ON DELETE SET NULL,
+      vehicle_id INT REFERENCES vehicles(id) ON DELETE SET NULL,
+      session_id INT REFERENCES diagnostic_sessions(id) ON DELETE SET NULL,
+      year TEXT,
+      make TEXT,
+      model TEXT,
+      flow_id TEXT,
+      symptom_text TEXT,
+      codes JSONB NOT NULL DEFAULT '[]'::jsonb,
+      confirmed_fix TEXT,
+      part_replaced TEXT,
+      did_fix_problem TEXT,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
 }
 
 async function getRepairHistoryByVehicle(vehicleId) {
@@ -697,6 +1847,122 @@ async function getTodoItemsByVehicle(vehicleId) {
   );
 
   return result.rows;
+}
+
+async function getSessionFromRequest(req) {
+  const sessionToken = req.header('x-session-token');
+
+  if (!sessionToken) {
+    return null;
+  }
+
+  const result = await pool.query(
+    `SELECT s.*, u.email, u.full_name
+     FROM auth_sessions s
+     LEFT JOIN auth_users u ON u.id = s.user_id
+     WHERE s.session_token = $1`,
+    [sessionToken]
+  );
+
+  const session = result.rows[0] || null;
+
+  if (!session) {
+    return null;
+  }
+
+  await pool.query(
+    `UPDATE auth_sessions SET last_used_at = CURRENT_TIMESTAMP WHERE id = $1`,
+    [session.id]
+  );
+
+  return session;
+}
+
+function buildOwnerQueryParts(session, startIndex = 2) {
+  if (session?.user_id) {
+    return {
+      clause: `owner_user_id = $${startIndex}`,
+      params: [session.user_id],
+    };
+  }
+
+  if (session?.session_token) {
+    return {
+      clause: `owner_guest_session_token = $${startIndex}`,
+      params: [session.session_token],
+    };
+  }
+
+  return {
+    clause: '1 = 0',
+    params: [],
+  };
+}
+
+async function getVehicleForSession(vehicleId, session) {
+  if (!session) {
+    return null;
+  }
+
+  const ownerParts = buildOwnerQueryParts(session, 2);
+  const result = await pool.query(
+    `SELECT * FROM vehicles WHERE id = $1 AND ${ownerParts.clause} LIMIT 1`,
+    [vehicleId, ...ownerParts.params]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function getRepairHistoryEntryForSession(entryId, session) {
+  if (!session) {
+    return null;
+  }
+
+  const ownerParts = buildOwnerQueryParts(session, 2);
+  const result = await pool.query(
+    `SELECT rhe.*, v.id AS vehicle_id
+     FROM repair_history_entries rhe
+     JOIN vehicles v ON v.id = rhe.vehicle_id
+     WHERE rhe.id = $1
+       AND ${ownerParts.clause}
+     LIMIT 1`,
+    [entryId, ...ownerParts.values]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function getTodoItemForSession(itemId, session) {
+  if (!session) {
+    return null;
+  }
+
+  const ownerParts = buildOwnerQueryParts(session, 2);
+  const result = await pool.query(
+    `SELECT vti.*, v.id AS vehicle_id
+     FROM vehicle_todo_items vti
+     JOIN vehicles v ON v.id = vti.vehicle_id
+     WHERE vti.id = $1
+       AND ${ownerParts.clause}
+     LIMIT 1`,
+    [itemId, ...ownerParts.values]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function migrateGuestDataToUser(guestSessionToken, userId) {
+  if (!guestSessionToken || !userId) {
+    return;
+  }
+
+  await pool.query(
+    `UPDATE vehicles
+     SET owner_user_id = $2,
+         owner_guest_session_token = NULL
+     WHERE owner_guest_session_token = $1`,
+    [guestSessionToken, userId]
+  );
 }
 
 function buildKbbValueUrl(vehicle = {}) {
@@ -817,8 +2083,179 @@ app.get('/', (req, res) => {
   res.send('Auto Fix Help API running');
 });
 
+app.post('/auth/guest', async (req, res) => {
+  try {
+    const sessionToken = generateToken();
+
+    await pool.query(
+      `INSERT INTO auth_sessions (session_token, session_type, guest_label)
+       VALUES ($1, 'guest', $2)`,
+      [sessionToken, 'Guest']
+    );
+
+    res.status(201).json({
+      mode: 'guest',
+      sessionToken,
+      user: null,
+    });
+  } catch (error) {
+    console.error('Guest session creation error:', error.message);
+    res.status(500).json({ error: 'Could not start guest mode' });
+  }
+});
+
+app.post('/auth/signup', async (req, res) => {
+  const { email, password, fullName, guestSessionToken } = req.body || {};
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'email and password are required' });
+  }
+
+  try {
+    const existing = await pool.query(
+      `SELECT id FROM auth_users WHERE LOWER(email) = LOWER($1)`,
+      [email]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'An account with that email already exists' });
+    }
+
+    const passwordHash = hashPassword(password);
+    const userResult = await pool.query(
+      `INSERT INTO auth_users (email, password_hash, full_name)
+       VALUES ($1, $2, $3)
+       RETURNING id, email, full_name`,
+      [email.trim(), passwordHash, fullName || null]
+    );
+
+    const user = userResult.rows[0];
+    const sessionToken = generateToken();
+
+    await pool.query(
+      `INSERT INTO auth_sessions (session_token, user_id, session_type)
+       VALUES ($1, $2, 'user')`,
+      [sessionToken, user.id]
+    );
+
+    await migrateGuestDataToUser(guestSessionToken, user.id);
+
+    res.status(201).json({
+      mode: 'authenticated',
+      sessionToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        plan: user.plan || 'free',
+      },
+    });
+  } catch (error) {
+    console.error('Signup error:', error.message);
+    res.status(500).json({ error: 'Could not create account' });
+  }
+});
+
+app.post('/auth/login', async (req, res) => {
+  const { email, password, guestSessionToken } = req.body || {};
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'email and password are required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT id, email, full_name, password_hash
+       FROM auth_users
+       WHERE LOWER(email) = LOWER($1)
+       LIMIT 1`,
+      [email]
+    );
+
+    const user = result.rows[0];
+
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const sessionToken = generateToken();
+
+    await pool.query(
+      `INSERT INTO auth_sessions (session_token, user_id, session_type)
+       VALUES ($1, $2, 'user')`,
+      [sessionToken, user.id]
+    );
+
+    await migrateGuestDataToUser(guestSessionToken, user.id);
+
+    res.json({
+      mode: 'authenticated',
+      sessionToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+      },
+    });
+  } catch (error) {
+    console.error('Login error:', error.message);
+    res.status(500).json({ error: 'Could not log in' });
+  }
+});
+
+app.get('/auth/session', async (req, res) => {
+  try {
+    const session = await getSessionFromRequest(req);
+
+    if (!session) {
+      return res.status(401).json({ error: 'No active session' });
+    }
+
+    res.json({
+      mode: session.user_id ? 'authenticated' : 'guest',
+      sessionToken: session.session_token,
+      user: session.user_id
+        ? {
+            id: session.user_id,
+            email: session.email,
+            fullName: session.full_name,
+          }
+        : null,
+    });
+  } catch (error) {
+    console.error('Session lookup error:', error.message);
+    res.status(500).json({ error: 'Could not load session' });
+  }
+});
+
+app.post('/auth/logout', async (req, res) => {
+  try {
+    const session = await getSessionFromRequest(req);
+
+    if (session) {
+      await pool.query(`DELETE FROM auth_sessions WHERE id = $1`, [session.id]);
+    }
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Logout error:', error.message);
+    res.status(500).json({ error: 'Could not log out' });
+  }
+});
+
 app.get('/years', (req, res) => {
-  res.json(YEARS);
+  const source = req.query.source === 'fallback' ? 'fallback' : 'carapi';
+
+  if (source === 'fallback') {
+    return res.json(YEARS);
+  }
+
+  fetchCarApiYears()
+    .then((years) => res.json(years))
+    .catch((error) => {
+      console.error('CarAPI years lookup error:', error.message);
+      res.json(YEARS);
+    });
 });
 
 app.get('/makes', async (req, res) => {
@@ -826,10 +2263,22 @@ app.get('/makes', async (req, res) => {
 
   try {
     if (!year) {
-      return res.json(sortStrings(PASSENGER_VEHICLE_MAKES));
+      const carApiYearsMakes = await fetchCarApiMakesByYear(CURRENT_YEAR);
+      return res.json(carApiYearsMakes.length > 0 ? carApiYearsMakes : sortStrings(PASSENGER_VEHICLE_MAKES));
     }
 
-    const makes = await getYearAwareMakes(year);
+    let makes = [];
+
+    try {
+      makes = await fetchCarApiMakesByYear(year);
+    } catch (carApiError) {
+      console.error('CarAPI makes lookup error:', carApiError.message);
+    }
+
+    if (makes.length === 0) {
+      makes = await getYearAwareMakes(year);
+    }
+
     res.json(makes);
   } catch (error) {
     console.error('Makes lookup error:', error.message);
@@ -845,7 +2294,18 @@ app.get('/models', async (req, res) => {
   }
 
   try {
-    const models = await fetchModelsForMakeYear(make, year);
+    let models = [];
+
+    try {
+      models = await fetchCarApiModelsByYearMake(year, make);
+    } catch (carApiError) {
+      console.error('CarAPI models lookup error:', carApiError.message);
+    }
+
+    if (models.length === 0) {
+      models = await fetchModelsForMakeYear(make, year);
+    }
+
     res.json(models);
   } catch (error) {
     console.error('Models lookup error:', error.message);
@@ -853,20 +2313,170 @@ app.get('/models', async (req, res) => {
   }
 });
 
-app.get('/fitment-options', (req, res) => {
+app.get('/trims', async (req, res) => {
   const { year, make, model } = req.query;
 
   if (!year || !make || !model) {
     return res.status(400).json({ error: 'year, make, and model are required' });
   }
 
-  res.json(resolveFitmentOptions(year, make, model));
+  try {
+    const trimRecords = await fetchCarApiTrimRecords(year, make, model);
+    const trims = sortStrings(
+      Array.from(
+        new Set(
+          trimRecords.map((record) => formatTrimRecord(record).label).filter(Boolean)
+        )
+      )
+    );
+
+    if (trims.length > 0) {
+      return res.json(trims);
+    }
+
+    return res.json(resolveFitmentOptions(year, make, model).trims);
+  } catch (error) {
+    console.error('Trim lookup error:', error.message);
+    res.json(resolveFitmentOptions(year, make, model).trims);
+  }
+});
+
+app.get('/fitment-options', (req, res) => {
+  const { year, make, model, trim } = req.query;
+
+  if (!year || !make || !model) {
+    return res.status(400).json({ error: 'year, make, and model are required' });
+  }
+
+  fetchCarApiTrimRecords(year, make, model)
+    .then(async (trimRecords) => {
+      const formattedTrims = trimRecords.map((record) => formatTrimRecord(record));
+      const selectedTrim = trim
+        ? formattedTrims.find((record) => normalizeText(record.label) === normalizeText(trim))
+        : null;
+
+      let engineRecords = [];
+
+      try {
+        engineRecords = await fetchCarApiEngineRecords(
+          year,
+          make,
+          model,
+          selectedTrim?.trim || selectedTrim?.label || trim || ''
+        );
+      } catch (engineError) {
+        console.error('CarAPI engine lookup error:', engineError.message);
+      }
+
+      const fitmentFromCarApi = buildVehicleOptionMatrixFromCarApi(formattedTrims, engineRecords);
+      const fallbackFitment = resolveFitmentOptions(year, make, model, trim);
+      const fitmentOptions = {
+        trims: fitmentFromCarApi.trims.length > 0 ? fitmentFromCarApi.trims : fallbackFitment.trims,
+        engines: fitmentFromCarApi.engines.length > 0 ? fitmentFromCarApi.engines : fallbackFitment.engines,
+        drivetrains:
+          fitmentFromCarApi.drivetrains.length > 0
+            ? fitmentFromCarApi.drivetrains
+            : fallbackFitment.drivetrains,
+        transmissions: fitmentFromCarApi.transmissions,
+      };
+
+      if (
+        fitmentOptions.trims.length > 0 ||
+        fitmentOptions.engines.length > 0 ||
+        fitmentOptions.drivetrains.length > 0 ||
+        fitmentOptions.transmissions.length > 0
+      ) {
+        return res.json(fitmentOptions);
+      }
+
+      return res.json({
+        ...fallbackFitment,
+        transmissions: [],
+      });
+    })
+    .catch((error) => {
+      console.error('Fitment options lookup error:', error.message);
+      res.json({
+        ...resolveFitmentOptions(year, make, model, trim),
+        transmissions: [],
+      });
+    });
+});
+
+app.get('/engine-drivetrain-options', async (req, res) => {
+  const { year, make, model, trim } = req.query;
+
+  if (!year || !make || !model) {
+    return res.status(400).json({ error: 'year, make, and model are required' });
+  }
+
+  try {
+    const trimRecords = await fetchCarApiTrimRecords(year, make, model);
+    const formattedTrims = trimRecords.map((record) => formatTrimRecord(record));
+    const selectedTrim = trim
+      ? formattedTrims.find((record) => normalizeText(record.label) === normalizeText(trim))
+      : null;
+    const engineRecords = await fetchCarApiEngineRecords(
+      year,
+      make,
+      model,
+      selectedTrim?.trim || selectedTrim?.label || trim || ''
+    );
+
+    const fitmentFromCarApi = buildVehicleOptionMatrixFromCarApi(formattedTrims, engineRecords);
+    const fallbackFitment = resolveFitmentOptions(year, make, model, trim);
+
+    res.json({
+      trims: fitmentFromCarApi.trims.length > 0 ? fitmentFromCarApi.trims : fallbackFitment.trims,
+      engines: fitmentFromCarApi.engines.length > 0 ? fitmentFromCarApi.engines : fallbackFitment.engines,
+      drivetrains:
+        fitmentFromCarApi.drivetrains.length > 0
+          ? fitmentFromCarApi.drivetrains
+          : fallbackFitment.drivetrains,
+      transmissions: fitmentFromCarApi.transmissions,
+    });
+  } catch (error) {
+    console.error('Engine and drivetrain options lookup error:', error.message);
+    res.json({
+      ...resolveFitmentOptions(year, make, model, trim),
+      transmissions: [],
+    });
+  }
 });
 
 app.get('/vin/:vin', async (req, res) => {
   const vin = req.params.vin?.trim().toUpperCase();
 
   try {
+    try {
+      const carScanDecode = await carScanGet('/decode', { vin });
+      const decoded = carScanDecode?.data || {};
+      const carScanTrim = buildTrimPackageLabel(decoded.trim, null);
+
+      if (decoded.make || decoded.model || decoded.engine || decoded.transmission || carScanTrim) {
+        return res.json({
+          vin,
+          make: decoded.make || null,
+          manufacturer: decoded.manufacturer || null,
+          model: decoded.model || null,
+          year: decoded.year ? String(decoded.year) : null,
+          series: null,
+          trim: carScanTrim,
+          bodyClass: null,
+          vehicleType: null,
+          plantCity: null,
+          plantState: null,
+          plantCountry: null,
+          drivetrain: null,
+          transmission: decoded.transmission || null,
+          engine: decoded.engine || null,
+          zipCode: null,
+        });
+      }
+    } catch (carScanError) {
+      console.error('CarScan VIN decode error:', carScanError.message);
+    }
+
     const response = await axios.get(
       `https://vpic.nhtsa.dot.gov/api/vehicles/decodevin/${vin}?format=json`
     );
@@ -878,21 +2488,48 @@ app.get('/vin/:vin', async (req, res) => {
       return item && item.Value ? item.Value : null;
     };
 
+    const series = getValue('Series');
+    const trim = getValue('Trim');
+    const engine = buildEngineLabelFromVpicValues({
+      displacementL: getValue('Displacement (L)'),
+      cylinders: getValue('Engine Number of Cylinders'),
+      configuration: getValue('Engine Configuration'),
+      fuelType: getValue('Fuel Type - Primary'),
+    });
+    const transmission = buildTransmissionLabelFromVpic(
+      getValue('Transmission Style') || getValue('Transmission Speeds')
+    );
+    const engineOption = normalizeEngineOption(
+      {
+        label: engine,
+        value: engine,
+        fuelType: getValue('Fuel Type - Primary'),
+      },
+      {
+        make: getValue('Make'),
+        model: getValue('Model'),
+        trim: buildTrimPackageLabel(series, trim),
+      }
+    );
+
     res.json({
       vin,
       make: getValue('Make'),
       manufacturer: getValue('Manufacturer Name'),
       model: getValue('Model'),
       year: getValue('Model Year'),
-      series: getValue('Series'),
-      trim: getValue('Trim'),
+      series,
+      trim: buildTrimPackageLabel(series, trim),
       bodyClass: getValue('Body Class'),
       vehicleType: getValue('Vehicle Type'),
       plantCity: getValue('Plant City'),
       plantState: getValue('Plant State'),
       plantCountry: getValue('Plant Country'),
       drivetrain: getValue('Drive Type'),
-      engine: getValue('Engine Configuration'),
+      transmission,
+      engine,
+      fuelType: engineOption.fuelType,
+      fuelTypeConfidence: engineOption.confidence,
       zipCode: null,
     });
   } catch (error) {
@@ -901,12 +2538,62 @@ app.get('/vin/:vin', async (req, res) => {
   }
 });
 
+app.get('/vehicle-image', async (req, res) => {
+  const { year, make, model, trim } = req.query;
+
+  if (!year || !make || !model) {
+    return res.status(400).json({ error: 'year, make, and model are required' });
+  }
+
+  try {
+    const image = await getVehicleImage(pool, axios, {
+      year: String(year).trim(),
+      make: String(make).trim(),
+      model: String(model).trim(),
+      trim: trim ? String(trim).trim() : '',
+    });
+
+    if (!image) {
+      return res.json({
+        success: true,
+        image: null,
+        fallbackUsed: true,
+      });
+    }
+
+    res.json({
+      success: true,
+      image,
+    });
+  } catch (error) {
+    console.error('Vehicle image lookup error:', error.message);
+    res.json({
+      success: true,
+      image: null,
+      fallbackUsed: true,
+    });
+  }
+});
+
 app.post('/vehicles', async (req, res) => {
   const v = req.body;
 
   try {
+    const session = await getSessionFromRequest(req);
+
+    if (!session) {
+      return res.status(401).json({ error: 'A guest or user session is required' });
+    }
+
+    const ownerUserId = session.user_id || null;
+    const ownerGuestSessionToken = session.user_id ? null : session.session_token;
+
     if (v.vin) {
-      const existing = await pool.query('SELECT * FROM vehicles WHERE vin = $1', [v.vin]);
+      const ownerParts = buildOwnerQueryParts(session, 2);
+      const existing = await pool.query(
+        `SELECT * FROM vehicles WHERE vin = $1 AND ${ownerParts.clause} LIMIT 1`,
+        [v.vin, ...ownerParts.params]
+      );
 
       if (existing.rows.length > 0) {
         const updated = await pool.query(
@@ -923,11 +2610,14 @@ app.post('/vehicles', async (req, res) => {
                plant_state = COALESCE($11, plant_state),
                plant_country = COALESCE($12, plant_country),
                drivetrain = COALESCE($13, drivetrain),
-               engine = COALESCE($14, engine),
-               zip_code = COALESCE($15, zip_code),
-               purchase_price = COALESCE($16, purchase_price),
-               current_kbb_value = COALESCE($17, current_kbb_value)
-           WHERE vin = $1
+               transmission = COALESCE($14, transmission),
+               engine = COALESCE($15, engine),
+               fuel_type = COALESCE($16, fuel_type),
+               fuel_type_confidence = COALESCE($17, fuel_type_confidence),
+               zip_code = COALESCE($18, zip_code),
+               purchase_price = COALESCE($19, purchase_price),
+               current_kbb_value = COALESCE($20, current_kbb_value)
+          WHERE id = $21
            RETURNING *`,
           [
             v.vin,
@@ -943,10 +2633,14 @@ app.post('/vehicles', async (req, res) => {
             v.plantState || null,
             v.plantCountry || null,
             v.drivetrain || null,
+            v.transmission || null,
             v.engine || null,
+            v.fuelType || v.fuel_type ? normalizeFuelType(v.fuelType || v.fuel_type) : null,
+            v.fuelTypeConfidence || v.fuel_type_confidence || null,
             v.zipCode || null,
             v.purchasePrice ?? null,
             v.currentKbbValue ?? null,
+            existing.rows[0].id,
           ]
         );
 
@@ -956,11 +2650,13 @@ app.post('/vehicles', async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO vehicles
-      (vin, make, manufacturer, model, year, series, trim, body_class, vehicle_type, plant_city, plant_state, plant_country, drivetrain, engine, zip_code, purchase_price, current_kbb_value)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+      (vin, owner_user_id, owner_guest_session_token, make, manufacturer, model, year, series, trim, body_class, vehicle_type, plant_city, plant_state, plant_country, drivetrain, transmission, engine, fuel_type, fuel_type_confidence, zip_code, purchase_price, current_kbb_value)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
       RETURNING *`,
       [
         v.vin || null,
+        ownerUserId,
+        ownerGuestSessionToken,
         v.make || null,
         v.manufacturer || null,
         v.model || null,
@@ -973,7 +2669,10 @@ app.post('/vehicles', async (req, res) => {
         v.plantState || null,
         v.plantCountry || null,
         v.drivetrain || null,
+        v.transmission || null,
         v.engine || null,
+        v.fuelType || v.fuel_type ? normalizeFuelType(v.fuelType || v.fuel_type) : null,
+        v.fuelTypeConfidence || v.fuel_type_confidence || null,
         v.zipCode || null,
         parseMoney(v.purchasePrice),
         parseMoney(v.currentKbbValue),
@@ -989,7 +2688,17 @@ app.post('/vehicles', async (req, res) => {
 
 app.get('/vehicles', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM vehicles ORDER BY created_at DESC');
+    const session = await getSessionFromRequest(req);
+
+    if (!session) {
+      return res.json([]);
+    }
+
+    const ownerParts = buildOwnerQueryParts(session, 1);
+    const result = await pool.query(
+      `SELECT * FROM vehicles WHERE ${ownerParts.clause} ORDER BY created_at DESC`,
+      ownerParts.params
+    );
     res.json(result.rows);
   } catch (error) {
     console.error('Database fetch error:', error.message);
@@ -1002,6 +2711,13 @@ app.patch('/vehicles/:vehicleId/financials', async (req, res) => {
   const { purchasePrice, currentKbbValue } = req.body || {};
 
   try {
+    const session = await getSessionFromRequest(req);
+    const existingVehicle = await getVehicleForSession(vehicleId, session);
+
+    if (!existingVehicle) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
     const result = await pool.query(
       `UPDATE vehicles
        SET purchase_price = COALESCE($2, purchase_price),
@@ -1134,6 +2850,182 @@ app.get('/common-issues/:make/:model/:year', async (req, res) => {
   }
 });
 
+async function handleDiagnosticLookup(req, res) {
+  const normalizedCode = String(req.params.code || '').trim().toUpperCase();
+  const vehicle = {
+    vin: req.query.vin || '',
+    year: req.query.year || '',
+    make: req.query.make || '',
+    model: req.query.model || '',
+    trim: req.query.trim || '',
+    drivetrain: req.query.drivetrain || '',
+    transmission: req.query.transmission || '',
+    engine: req.query.engine || '',
+  };
+  const vehicleId = req.query.vehicleId || req.query.vehicle_id || '';
+
+  if (!normalizedCode) {
+    return res.status(400).json({ error: 'A diagnostic code is required' });
+  }
+
+  let resolvedMileage = parseInteger(req.query.mileage);
+
+  if (!resolvedMileage && vehicleId) {
+    try {
+      const historyEntries = await getRepairHistoryByVehicle(vehicleId);
+      resolvedMileage = getLatestMileageFromHistoryEntries(historyEntries);
+    } catch (historyError) {
+      console.error('Mileage lookup from history failed:', historyError.message);
+    }
+  }
+
+  try {
+    let codePayload = null;
+    let diagPayload = null;
+    let repairPayload = [];
+
+    if (vehicle.vin || vehicle.make) {
+      try {
+        const codeResponse = await carScanGet(
+          '/code',
+          vehicle.vin
+            ? { vin: vehicle.vin, codes: normalizedCode }
+            : { make: vehicle.make, codes: normalizedCode }
+        );
+        codePayload = normalizeCarScanCodeResponse(codeResponse, normalizedCode);
+      } catch (codeError) {
+        console.error('CarScan code lookup error:', codeError.message);
+      }
+    }
+
+    if (vehicle.vin && resolvedMileage) {
+      try {
+        const [diagResponse, repairResponse] = await Promise.all([
+          carScanGet(
+            '/diag',
+            { vin: vehicle.vin, mileage: resolvedMileage, dtc: normalizedCode.toLowerCase() },
+            false
+          ),
+          carScanGet(
+            '/repair',
+            { vin: vehicle.vin, mileage: resolvedMileage, dtc: normalizedCode.toLowerCase() },
+            false
+          ),
+        ]);
+
+        diagPayload = normalizeCarScanDiagResponse(diagResponse);
+        repairPayload = normalizeCarScanRepairResponse(repairResponse);
+      } catch (deepError) {
+        console.error('CarScan diag or repair lookup error:', deepError.message);
+      }
+    }
+
+    const fallback = buildFallbackDiagnosticPayload(
+      normalizedCode,
+      vehicle,
+      codePayload?.definition || diagPayload?.tech_definition || diagPayload?.layman_definition || ''
+    );
+
+    const severity =
+      diagPayload?.urgency !== undefined
+        ? mapUrgencyToSeverity(diagPayload.urgency, fallback.definition)
+        : fallback.severity;
+
+    const possibleFixes =
+      repairPayload.length > 0
+        ? repairPayload.map((item) => item.desc).filter(Boolean)
+        : fallback.possible_fixes;
+
+    const primaryRepair = repairPayload[0] || null;
+    const estimatedCost = normalizeCostValue(primaryRepair?.repair?.total_cost);
+    const difficulty = parseInteger(primaryRepair?.repair?.difficulty);
+
+    return res.json({
+      code: normalizedCode,
+      definition:
+        codePayload?.definition ||
+        diagPayload?.tech_definition ||
+        diagPayload?.layman_definition ||
+        fallback.definition,
+      description:
+        diagPayload?.layman_definition ||
+        diagPayload?.effect_on_vehicle ||
+        fallback.description,
+      manufacturer_specific_meaning: fallback.manufacturer_specific_meaning,
+      severity,
+      severity_color: getSeverityColorLabel(severity),
+      possible_fixes: Array.from(new Set(possibleFixes)),
+      repair_options:
+        repairPayload.length > 0
+          ? repairPayload.map((item) => ({
+              title: item.desc || 'Suggested repair',
+              urgency: item.urgency ?? null,
+              urgency_desc: item.urgency_desc || null,
+              difficulty: parseInteger(item?.repair?.difficulty),
+              difficulty_label: getDifficultyLabel(item?.repair?.difficulty),
+              estimated_hours: normalizeCostValue(item?.repair?.hours),
+              estimated_cost: normalizeCostValue(item?.repair?.total_cost),
+              tsb_count: Array.isArray(item.tsb) ? item.tsb.length : 0,
+            }))
+          : fallback.repair_options,
+      difficulty,
+      difficulty_label: getDifficultyLabel(difficulty),
+      estimated_cost: estimatedCost,
+      notes: Array.from(
+        new Set(
+          [
+            diagPayload?.urgency_desc || null,
+            diagPayload?.effect_on_vehicle || null,
+            diagPayload?.responsible_system || null,
+            fallback.notes?.[0] || null,
+            'These are possible causes and not guaranteed fixes.',
+          ].filter(Boolean)
+        )
+      ),
+      disclaimer: 'These are possible causes and not guaranteed fixes',
+      source_name:
+        codePayload || diagPayload || repairPayload.length > 0
+          ? 'CarScan Diagnostic API'
+          : fallback.source_name,
+      source_url: 'https://dev-api.carscan.com/member/docs',
+      genericMeaning: fallback.description,
+      manufacturerSpecificMeaning: fallback.manufacturer_specific_meaning,
+      severityColor: getSeverityColorLabel(severity),
+      possibleFixes: Array.from(new Set(possibleFixes)),
+      repairOptions:
+        repairPayload.length > 0
+          ? repairPayload.map((item) => ({
+              title: item.desc || 'Suggested repair',
+              urgencyDesc: item.urgency_desc || null,
+              difficulty: parseInteger(item?.repair?.difficulty),
+              difficultyLabel: getDifficultyLabel(item?.repair?.difficulty),
+              estimatedCost: normalizeCostValue(item?.repair?.total_cost),
+            }))
+          : fallback.repair_options.map((item) => ({
+              title: item.title,
+              urgencyDesc: item.urgency_desc,
+              difficulty: item.difficulty,
+              difficultyLabel: item.difficulty_label,
+              estimatedCost: item.total_cost,
+            })),
+      difficultyLabel: getDifficultyLabel(difficulty),
+      estimatedCost,
+      vehicleContextNote: buildVehicleSpecificObdNotes(normalizedCode, vehicle),
+      sourceName:
+        codePayload || diagPayload || repairPayload.length > 0
+          ? 'CarScan Diagnostic API'
+          : fallback.source_name,
+      sourceUrl: 'https://dev-api.carscan.com/member/docs',
+    });
+  } catch (error) {
+    console.error('Diagnostic lookup error:', error.message);
+    return res.json(buildFallbackDiagnosticPayload(normalizedCode, vehicle));
+  }
+}
+
+app.get('/diagnostic/:code', handleDiagnosticLookup);
+app.get('/diagnostic-codes/:code', handleDiagnosticLookup);
+
 app.get('/electrical-schematics/:make/:model/:year', (req, res) => {
   const { make, model, year } = req.params;
   const discipline = req.query.discipline || SCHEMATIC_DISCIPLINES[0];
@@ -1161,112 +3053,63 @@ app.get('/parts/:make/:model/:year', (req, res) => {
   });
 });
 
-app.post('/ai-diagnostic-chat', async (req, res) => {
-  const { vehicle, message, repairHistory, todoItems, diagnosticContext } = req.body;
-  const apiKey = process.env.OPENAI_API_KEY;
+app.post('/account/upgrade', async (req, res) => {
+  const { plan } = req.body;
+  if (!['free', 'pro'].includes(plan)) return res.status(400).json({ error: 'Invalid plan' });
+  try {
+    const session = await getSessionFromRequest(req);
+    if (!session?.user_id) return res.status(401).json({ error: 'Must be logged in' });
+    await pool.query('UPDATE auth_users SET plan = $1 WHERE id = $2', [plan, session.user_id]);
+    res.json({ success: true, plan });
+  } catch (e) { res.status(500).json({ error: 'Could not update plan' }); }
+});
 
-  if (!apiKey) {
-    return res.status(400).json({
-      error:
-        'OPENAI_API_KEY is not configured on the backend. Put OPENAI_API_KEY=your_key in backend/.env or export it in the same terminal before starting node index.js.',
-    });
-  }
+app.get('/shops', async (req, res) => {
+  const { make, issue, zip } = req.query;
 
-  if (!message || !vehicle?.make || !vehicle?.model || !vehicle?.year) {
-    return res.status(400).json({
-      error: 'vehicle and message are required',
-    });
+  if (!zip) {
+    return res.status(400).json({ error: 'zip is required' });
   }
 
   try {
-    const prompt = [
-      `Vehicle: ${vehicle.year} ${vehicle.make} ${vehicle.model}`,
-      `Drivetrain: ${vehicle.drivetrain || 'unknown'}`,
-      `Engine: ${vehicle.engine || 'unknown'}`,
-      `User question: ${message}`,
-      `Repair history: ${JSON.stringify(repairHistory || []).slice(0, 5000)}`,
-      `Open to do items: ${JSON.stringify(todoItems || []).slice(0, 3000)}`,
-      `Diagnostic context: ${JSON.stringify(diagnosticContext || {}).slice(0, 3000)}`,
-      'Help as a practical automotive diagnostic assistant.',
-      'Use the vehicle history to lower confidence in parts already replaced or failed repairs already attempted.',
-      'Explain likely causes, quick checks, and recommended next diagnostic steps.',
-      'Do not claim certainty when the evidence is limited.',
-    ].join('\n');
+    const shops = await findShopsNearZip(String(zip).trim(), {
+      make: typeof make === 'string' ? make : '',
+      issue: typeof issue === 'string' ? issue : '',
+    });
 
-    const response = await axios.post(
-      'https://api.openai.com/v1/responses',
-      {
-        model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-        input: prompt,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-
-    const text = getResponseText(response.data);
-
-    if (!text) {
-      return res.status(500).json({ error: 'AI response did not include text output.' });
+    if (shops.length > 0) {
+      return res.json(shops);
     }
 
-    res.json({
-      reply: text,
-      sourceName: 'OpenAI Responses API',
-      sourceUrl: 'https://platform.openai.com/docs/api-reference/responses',
-    });
+    return res.json([
+      {
+        id: `fallback-${zip}-1`,
+        name: 'General Auto Repair Near Your ZIP',
+        rating: null,
+        distance: 'Nearby',
+        specialty: 'General auto repair',
+        matchReason: 'No specialty match was found, showing nearby general repair options instead',
+        zipCode: zip,
+        sourceName: 'ZIP fallback result',
+        sourceUrl: null,
+      },
+    ]);
   } catch (error) {
-    console.error('AI diagnostic chat error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'AI diagnostic chat failed' });
+    console.error('Shop lookup error:', error.message);
+    res.status(500).json({ error: 'Local shop lookup failed' });
   }
-});
-
-app.get('/shops', (req, res) => {
-  const { make, issue, zip } = req.query;
-
-  res.json([
-    {
-      id: 1,
-      name: `${make || 'Vehicle'} Specialty Auto Care`,
-      rating: 4.9,
-      distance: '2.1 miles',
-      specialty: `${make || 'General'} diagnostics`,
-      matchReason: issue ? `Strong match for ${issue}` : 'Good match for your vehicle',
-      zipCode: zip || null,
-      sourceName: 'Demo local shop data',
-      sourceUrl: null,
-    },
-    {
-      id: 2,
-      name: 'Local Drivability & Electrical',
-      rating: 4.8,
-      distance: '3.8 miles',
-      specialty: 'Electrical and drivability',
-      matchReason: 'Highly rated independent shop',
-      zipCode: zip || null,
-      sourceName: 'Demo local shop data',
-      sourceUrl: null,
-    },
-    {
-      id: 3,
-      name: `${make || 'Brand'} Dealer Service Center`,
-      rating: 4.4,
-      distance: '6.2 miles',
-      specialty: 'OEM service and recalls',
-      matchReason: 'Best option for recalls and factory bulletins',
-      zipCode: zip || null,
-      sourceName: 'Demo local shop data',
-      sourceUrl: null,
-    },
-  ]);
 });
 
 app.get('/vehicles/:vehicleId/repair-history', async (req, res) => {
   try {
-    const rows = await getRepairHistoryByVehicle(req.params.vehicleId);
+    const session = await getSessionFromRequest(req);
+    const vehicle = await getVehicleForSession(req.params.vehicleId, session);
+
+    if (!vehicle) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
+    const rows = await getRepairHistoryByVehicle(vehicle.id);
     res.json(rows);
   } catch (error) {
     console.error('Repair history fetch error:', error.message);
@@ -1281,16 +3124,30 @@ app.post('/vehicles/:vehicleId/repair-history', async (req, res) => {
   const laborCost = parseMoney(entry.laborCost);
   const totalCost = entry.totalCost !== undefined ? parseMoney(entry.totalCost) : partsCost + laborCost;
 
+  // Sanitize date — store null if invalid
+  const parseDate = (val) => {
+    if (!val) return null;
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : val;
+  };
+
   try {
+    const session = await getSessionFromRequest(req);
+    const vehicle = await getVehicleForSession(vehicleId, session);
+
+    if (!vehicle) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
     const result = await pool.query(
       `INSERT INTO repair_history_entries
       (vehicle_id, entry_type, service_date, mileage, problem_symptom, suspected_cause, repair_performed, parts_used, labor_notes, parts_cost, labor_cost, total_cost, fixed_issue, follow_up_repair, actual_fix_later, notes)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
       RETURNING *`,
       [
-        vehicleId,
+        vehicle.id,
         entry.entryType || 'repair',
-        entry.serviceDate || null,
+        parseDate(entry.serviceDate),
         parseInteger(entry.mileage),
         entry.problemSymptom || null,
         entry.suspectedCause || null,
@@ -1322,6 +3179,13 @@ app.put('/repair-history/:id', async (req, res) => {
   const totalCost = entry.totalCost !== undefined ? parseMoney(entry.totalCost) : partsCost + laborCost;
 
   try {
+    const session = await getSessionFromRequest(req);
+    const existingEntry = await getRepairHistoryEntryForSession(id, session);
+
+    if (!existingEntry) {
+      return res.status(404).json({ error: 'Repair history entry not found' });
+    }
+
     const result = await pool.query(
       `UPDATE repair_history_entries
        SET entry_type = $2,
@@ -1373,11 +3237,36 @@ app.put('/repair-history/:id', async (req, res) => {
   }
 });
 
+app.delete('/repair-history/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const session = await getSessionFromRequest(req);
+    if (!session) return res.status(401).json({ error: 'Unauthorized' });
+    const ownerParts = buildOwnerQueryParts(session, 2);
+    const result = await pool.query(
+      'DELETE FROM repair_history_entries WHERE id = $1 AND vehicle_id IN (SELECT id FROM vehicles WHERE ' + ownerParts.clause + ') RETURNING id',
+      [id, ...ownerParts.params]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete repair error:', error.message);
+    res.status(500).json({ error: 'Could not delete entry' });
+  }
+});
+
 app.patch('/repair-history/:id/outcome', async (req, res) => {
   const { id } = req.params;
   const { fixedIssue, actualFixLater, followUpRepair } = req.body;
 
   try {
+    const session = await getSessionFromRequest(req);
+    const existingEntry = await getRepairHistoryEntryForSession(id, session);
+
+    if (!existingEntry) {
+      return res.status(404).json({ error: 'Repair history entry not found' });
+    }
+
     const result = await pool.query(
       `UPDATE repair_history_entries
        SET fixed_issue = COALESCE($2, fixed_issue),
@@ -1407,7 +3296,14 @@ app.patch('/repair-history/:id/outcome', async (req, res) => {
 
 app.get('/vehicles/:vehicleId/todos', async (req, res) => {
   try {
-    const rows = await getTodoItemsByVehicle(req.params.vehicleId);
+    const session = await getSessionFromRequest(req);
+    const vehicle = await getVehicleForSession(req.params.vehicleId, session);
+
+    if (!vehicle) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
+    const rows = await getTodoItemsByVehicle(vehicle.id);
     res.json(rows);
   } catch (error) {
     console.error('To do fetch error:', error.message);
@@ -1420,13 +3316,20 @@ app.post('/vehicles/:vehicleId/todos', async (req, res) => {
   const item = req.body;
 
   try {
+    const session = await getSessionFromRequest(req);
+    const vehicle = await getVehicleForSession(vehicleId, session);
+
+    if (!vehicle) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
     const result = await pool.query(
       `INSERT INTO vehicle_todo_items
       (vehicle_id, item_type, title, description, priority, due_date, target_mileage, estimated_cost, status, notes)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       RETURNING *`,
       [
-        vehicleId,
+        vehicle.id,
         item.itemType || 'maintenance',
         item.title,
         item.description || null,
@@ -1451,6 +3354,13 @@ app.put('/todos/:id', async (req, res) => {
   const item = req.body;
 
   try {
+    const session = await getSessionFromRequest(req);
+    const existingItem = await getTodoItemForSession(id, session);
+
+    if (!existingItem) {
+      return res.status(404).json({ error: 'To do item not found' });
+    }
+
     const result = await pool.query(
       `UPDATE vehicle_todo_items
        SET item_type = $2,
@@ -1490,11 +3400,36 @@ app.put('/todos/:id', async (req, res) => {
   }
 });
 
+app.delete('/todos/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const session = await getSessionFromRequest(req);
+    if (!session) return res.status(401).json({ error: 'Unauthorized' });
+    const ownerParts = buildOwnerQueryParts(session, 2);
+    const result = await pool.query(
+      'DELETE FROM vehicle_todos WHERE id = $1 AND vehicle_id IN (SELECT id FROM vehicles WHERE ' + ownerParts.clause + ') RETURNING id',
+      [id, ...ownerParts.params]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete todo error:', error.message);
+    res.status(500).json({ error: 'Could not delete item' });
+  }
+});
+
 app.patch('/todos/:id/status', async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
 
   try {
+    const session = await getSessionFromRequest(req);
+    const existingItem = await getTodoItemForSession(id, session);
+
+    if (!existingItem) {
+      return res.status(404).json({ error: 'To do item not found' });
+    }
+
     const result = await pool.query(
       `UPDATE vehicle_todo_items
        SET status = $2,
@@ -1517,17 +3452,16 @@ app.patch('/todos/:id/status', async (req, res) => {
 
 app.get('/vehicles/:vehicleId/cost-summary', async (req, res) => {
   try {
-    const vehicleResult = await pool.query('SELECT * FROM vehicles WHERE id = $1', [
-      req.params.vehicleId,
-    ]);
+    const session = await getSessionFromRequest(req);
+    const vehicle = await getVehicleForSession(req.params.vehicleId, session);
 
-    if (vehicleResult.rows.length === 0) {
+    if (!vehicle) {
       return res.status(404).json({ error: 'Vehicle not found' });
     }
 
-    const historyEntries = await getRepairHistoryByVehicle(req.params.vehicleId);
-    const todoItems = await getTodoItemsByVehicle(req.params.vehicleId);
-    res.json(buildCostSummary(vehicleResult.rows[0], historyEntries, todoItems));
+    const historyEntries = await getRepairHistoryByVehicle(vehicle.id);
+    const todoItems = await getTodoItemsByVehicle(vehicle.id);
+    res.json(buildCostSummary(vehicle, historyEntries, todoItems));
   } catch (error) {
     console.error('Cost summary fetch error:', error.message);
     res.status(500).json({ error: 'Failed to fetch cost summary' });
@@ -1536,7 +3470,14 @@ app.get('/vehicles/:vehicleId/cost-summary', async (req, res) => {
 
 app.get('/vehicles/:vehicleId/diagnostic-context', async (req, res) => {
   try {
-    const historyEntries = await getRepairHistoryByVehicle(req.params.vehicleId);
+    const session = await getSessionFromRequest(req);
+    const vehicle = await getVehicleForSession(req.params.vehicleId, session);
+
+    if (!vehicle) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
+    const historyEntries = await getRepairHistoryByVehicle(vehicle.id);
     res.json(buildDiagnosticContext(historyEntries));
   } catch (error) {
     console.error('Diagnostic context fetch error:', error.message);
@@ -1544,23 +3485,352 @@ app.get('/vehicles/:vehicleId/diagnostic-context', async (req, res) => {
   }
 });
 
-pool.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('Database connection error:', err);
-    process.exit(1);
-    return;
+function toNullableInt(value) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toJsonArray(value) {
+  if (Array.isArray(value)) {
+    return value;
   }
 
-  console.log('Database connected:', res.rows[0]);
+  if (typeof value === 'string' && value.trim()) {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
 
-  initializeDatabase()
-    .then(() => {
-      app.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server running on port ${PORT}`);
-      });
-    })
-    .catch((error) => {
-      console.error('Database initialization error:', error.message);
-      process.exit(1);
-    });
+  return [];
+}
+
+function mapDiagnosticSession(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    vehicleId: row.vehicle_id,
+    flowId: row.flow_id,
+    symptomText: row.symptom_text,
+    codes: row.codes || [],
+    selectedVehicleYear: row.selected_vehicle_year,
+    selectedVehicleMake: row.selected_vehicle_make,
+    selectedVehicleModel: row.selected_vehicle_model,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function getDiagnosticSession(sessionId, authSession = null) {
+  const result = await pool.query('SELECT * FROM diagnostic_sessions WHERE id = $1', [sessionId]);
+  const diagnosticSession = result.rows[0] || null;
+
+  if (!diagnosticSession) {
+    return null;
+  }
+
+  if (authSession?.user_id && diagnosticSession.user_id && diagnosticSession.user_id !== authSession.user_id) {
+    return null;
+  }
+
+  return diagnosticSession;
+}
+
+async function getConfirmedFixesForLearning(vehicle = {}, flowId = null) {
+  const year = vehicle.year || vehicle.selectedVehicleYear || null;
+  const make = vehicle.make || vehicle.selectedVehicleMake || null;
+  const model = vehicle.model || vehicle.selectedVehicleModel || null;
+
+  const result = await pool.query(
+    `SELECT *
+     FROM confirmed_fixes
+     WHERE ($1::text IS NULL OR LOWER(make) = LOWER($1))
+       AND ($2::text IS NULL OR LOWER(model) = LOWER($2))
+       AND ($3::text IS NULL OR year = $3)
+       AND ($4::text IS NULL OR flow_id = $4)
+     ORDER BY created_at DESC
+     LIMIT 50`,
+    [make, model, year, flowId]
+  );
+
+  return result.rows;
+}
+
+app.post('/diagnostic-sessions', async (req, res) => {
+  try {
+    const authSession = await getSessionFromRequest(req);
+    const body = req.body || {};
+    const vehicle = body.vehicle || {};
+    const vehicleId = toNullableInt(body.vehicleId || vehicle.id);
+
+    const result = await pool.query(
+      `INSERT INTO diagnostic_sessions
+       (user_id, vehicle_id, flow_id, symptom_text, codes, selected_vehicle_year, selected_vehicle_make, selected_vehicle_model)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)
+       RETURNING *`,
+      [
+        authSession?.user_id || null,
+        vehicleId,
+        body.flowId || body.flow?.id || null,
+        body.symptomText || body.symptoms || '',
+        JSON.stringify(toJsonArray(body.codes)),
+        vehicle.year || body.selectedVehicleYear || null,
+        vehicle.make || body.selectedVehicleMake || null,
+        vehicle.model || body.selectedVehicleModel || null,
+      ]
+    );
+
+    res.status(201).json(mapDiagnosticSession(result.rows[0]));
+  } catch (error) {
+    console.error('Diagnostic session create error:', error.message);
+    res.status(500).json({ error: 'Failed to create diagnostic session' });
+  }
 });
+
+app.get('/diagnostic-sessions/:id', async (req, res) => {
+  try {
+    const authSession = await getSessionFromRequest(req);
+    const diagnosticSession = await getDiagnosticSession(req.params.id, authSession);
+
+    if (!diagnosticSession) {
+      return res.status(404).json({ error: 'Diagnostic session not found' });
+    }
+
+    const [answers, suggestions, confirmedFixes] = await Promise.all([
+      pool.query('SELECT * FROM diagnostic_answers WHERE session_id = $1 ORDER BY id ASC', [req.params.id]),
+      pool.query('SELECT * FROM diagnostic_suggestions WHERE session_id = $1 ORDER BY score DESC, id ASC', [req.params.id]),
+      pool.query('SELECT * FROM confirmed_fixes WHERE session_id = $1 ORDER BY created_at DESC', [req.params.id]),
+    ]);
+
+    res.json({
+      ...mapDiagnosticSession(diagnosticSession),
+      answers: answers.rows,
+      suggestions: suggestions.rows,
+      confirmedFixes: confirmedFixes.rows,
+    });
+  } catch (error) {
+    console.error('Diagnostic session fetch error:', error.message);
+    res.status(500).json({ error: 'Failed to fetch diagnostic session' });
+  }
+});
+
+app.post('/diagnostic-sessions/:id/answers', async (req, res) => {
+  try {
+    const authSession = await getSessionFromRequest(req);
+    const diagnosticSession = await getDiagnosticSession(req.params.id, authSession);
+
+    if (!diagnosticSession) {
+      return res.status(404).json({ error: 'Diagnostic session not found' });
+    }
+
+    const answers = Array.isArray(req.body?.answers) ? req.body.answers : [req.body || {}];
+    const inserted = [];
+
+    for (const answer of answers) {
+      const result = await pool.query(
+        `INSERT INTO diagnostic_answers (session_id, step_id, question, answer)
+         VALUES ($1,$2,$3,$4)
+         RETURNING *`,
+        [req.params.id, answer.stepId || answer.step_id || null, answer.question || '', answer.answer || '']
+      );
+      inserted.push(result.rows[0]);
+    }
+
+    await pool.query('UPDATE diagnostic_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [req.params.id]);
+    res.status(201).json(inserted);
+  } catch (error) {
+    console.error('Diagnostic answer save error:', error.message);
+    res.status(500).json({ error: 'Failed to save diagnostic answers' });
+  }
+});
+
+app.get('/diagnostic-sessions/:id/suggestions', async (req, res) => {
+  try {
+    const authSession = await getSessionFromRequest(req);
+    const diagnosticSession = await getDiagnosticSession(req.params.id, authSession);
+
+    if (!diagnosticSession) {
+      return res.status(404).json({ error: 'Diagnostic session not found' });
+    }
+
+    const result = await pool.query(
+      'SELECT * FROM diagnostic_suggestions WHERE session_id = $1 ORDER BY score DESC, id ASC',
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Diagnostic suggestions fetch error:', error.message);
+    res.status(500).json({ error: 'Failed to fetch diagnostic suggestions' });
+  }
+});
+
+app.post('/diagnostic-sessions/:id/confirmed-fix', async (req, res) => {
+  try {
+    const authSession = await getSessionFromRequest(req);
+    const diagnosticSession = await getDiagnosticSession(req.params.id, authSession);
+
+    if (!diagnosticSession) {
+      return res.status(404).json({ error: 'Diagnostic session not found' });
+    }
+
+    const body = req.body || {};
+    const result = await pool.query(
+      `INSERT INTO confirmed_fixes
+       (user_id, vehicle_id, session_id, year, make, model, flow_id, symptom_text, codes, confirmed_fix, part_replaced, did_fix_problem, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13)
+       RETURNING *`,
+      [
+        authSession?.user_id || diagnosticSession.user_id || null,
+        diagnosticSession.vehicle_id,
+        diagnosticSession.id,
+        body.year || diagnosticSession.selected_vehicle_year,
+        body.make || diagnosticSession.selected_vehicle_make,
+        body.model || diagnosticSession.selected_vehicle_model,
+        body.flowId || diagnosticSession.flow_id,
+        body.symptomText || diagnosticSession.symptom_text,
+        JSON.stringify(toJsonArray(body.codes || diagnosticSession.codes)),
+        body.confirmedFix || body.confirmed_fix || '',
+        body.partReplaced || body.part_replaced || '',
+        body.didFixProblem || body.did_fix_problem || '',
+        body.notes || '',
+      ]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Confirmed fix save error:', error.message);
+    res.status(500).json({ error: 'Failed to save confirmed fix' });
+  }
+});
+
+app.get('/learning/common-fixes/:make/:model/:year', async (req, res) => {
+  try {
+    const { make, model, year } = req.params;
+    const result = await pool.query(
+      `SELECT confirmed_fix, part_replaced, did_fix_problem, notes, flow_id, COUNT(*)::int AS fix_count, MAX(created_at) AS last_seen_at
+       FROM confirmed_fixes
+       WHERE LOWER(make) = LOWER($1)
+         AND LOWER(model) = LOWER($2)
+         AND year = $3
+       GROUP BY confirmed_fix, part_replaced, did_fix_problem, notes, flow_id
+       ORDER BY fix_count DESC, last_seen_at DESC
+       LIMIT 20`,
+      [make, model, year]
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Common fixes fetch error:', error.message);
+    res.status(500).json({ error: 'Failed to fetch common fixes' });
+  }
+});
+
+app.post('/learning/recommend', async (req, res) => {
+  try {
+    const authSession = await getSessionFromRequest(req);
+    const body = req.body || {};
+    const vehicle = body.vehicle || {};
+    const flow = body.flow || { id: body.flowId };
+    const vehicleId = toNullableInt(body.vehicleId || vehicle.id);
+    const repairHistory =
+      Array.isArray(body.repairHistory) && body.repairHistory.length > 0
+        ? body.repairHistory
+        : vehicleId
+          ? await getRepairHistoryByVehicle(vehicleId)
+          : [];
+    const confirmedFixes = [
+      ...(Array.isArray(body.confirmedFixes) ? body.confirmedFixes : []),
+      ...(await getConfirmedFixesForLearning(vehicle, flow.id || body.flowId || null)),
+    ];
+
+    let diagnosticSessionId = toNullableInt(body.sessionId);
+
+    if (!diagnosticSessionId) {
+      const created = await pool.query(
+        `INSERT INTO diagnostic_sessions
+         (user_id, vehicle_id, flow_id, symptom_text, codes, selected_vehicle_year, selected_vehicle_make, selected_vehicle_model)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)
+         RETURNING *`,
+        [
+          authSession?.user_id || null,
+          vehicleId,
+          flow.id || body.flowId || null,
+          body.symptoms || body.symptomText || '',
+          JSON.stringify(toJsonArray(body.codes)),
+          vehicle.year || null,
+          vehicle.make || null,
+          vehicle.model || null,
+        ]
+      );
+      diagnosticSessionId = created.rows[0].id;
+    }
+
+    if (diagnosticSessionId && Array.isArray(body.answers)) {
+      await pool.query('DELETE FROM diagnostic_answers WHERE session_id = $1', [diagnosticSessionId]);
+      for (const answer of body.answers) {
+        await pool.query(
+          `INSERT INTO diagnostic_answers (session_id, step_id, question, answer)
+           VALUES ($1,$2,$3,$4)`,
+          [diagnosticSessionId, answer.stepId || answer.step_id || null, answer.question || '', answer.answer || '']
+        );
+      }
+    }
+
+    const suggestions = scoreDiagnosticSuggestions({
+      vehicle,
+      flow,
+      symptoms: body.symptoms || body.symptomText || '',
+      codes: toJsonArray(body.codes),
+      answers: body.answers || [],
+      commonIssues: body.commonIssues || [],
+      repairHistory,
+      confirmedFixes,
+    }).slice(0, 8);
+
+    if (diagnosticSessionId) {
+      await pool.query('DELETE FROM diagnostic_suggestions WHERE session_id = $1', [diagnosticSessionId]);
+      for (const suggestion of suggestions) {
+        await pool.query(
+          `INSERT INTO diagnostic_suggestions
+           (session_id, cause, score, reason, related_issue_id, related_flow_id)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [
+            diagnosticSessionId,
+            suggestion.cause,
+            suggestion.score,
+            suggestion.reason,
+            suggestion.relatedIssueId || null,
+            suggestion.suggestedFlowId || null,
+          ]
+        );
+      }
+    }
+
+    res.json({
+      sessionId: diagnosticSessionId,
+      disclaimer:
+        'VinFix Smart Diagnosis is a recommendation based on symptoms, vehicle history, and common failures. Confirm with testing before replacing parts.',
+      suggestions,
+    });
+  } catch (error) {
+    console.error('Learning recommendation error:', error.message);
+    res.status(500).json({ error: 'Failed to build diagnostic recommendations' });
+  }
+});
+
+async function startServer() {
+  try {
+    pool = await initDatabase();
+    await initializeDatabase();
+    app.listen(PORT, '0.0.0.0', () => {
+      const mode = useLocalDatabase() ? 'local embedded Postgres' : 'remote Postgres';
+      console.log(`Server running on port ${PORT} (${mode})`);
+    });
+  } catch (error) {
+    console.error('Server startup error:', error?.message || error || 'Unknown startup error');
+    process.exit(1);
+  }
+}
+
+startServer();

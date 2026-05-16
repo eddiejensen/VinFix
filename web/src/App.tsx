@@ -11,6 +11,7 @@ import { PartsPage } from "./pages/PartsPage";
 import { ShopsPage } from "./pages/ShopsPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { PartIdentifierPage } from "./pages/PartIdentifierPage";
+import { ProfilePage } from "./pages/ProfilePage";
 
 const router = createBrowserRouter([
   { path: "/", element: <AppLayout />, children: [
@@ -25,6 +26,7 @@ const router = createBrowserRouter([
     { path: "parts", element: <PartsPage /> },
     { path: "shops", element: <ShopsPage /> },
     { path: "history", element: <HistoryPage /> },
+    { path: "profile", element: <ProfilePage /> },
   ] }
 ]);
 

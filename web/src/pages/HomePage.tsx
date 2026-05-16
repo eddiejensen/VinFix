@@ -14,12 +14,14 @@ export function HomePage() {
     </section>
     <VehicleSelector />
     <section className="feature-grid">
-      <FeatureCard icon="🧭" title="Diagnostic flows" body="Guided questions based on symptom and fuel type." to="/diagnose/flows" />
-      <FeatureCard icon="⚠️" title="Code lookup" body="Explain codes, severity, and first checks." to="/diagnose/code" />
-      <FeatureCard icon="🔍" title="VIN lookup" body="Decode VIN and set your selected vehicle." to="/vin" />
-      <FeatureCard icon="🧰" title="Common issues" body="See common patterns for your vehicle." to="/issues" />
-      <FeatureCard icon="📋" title="Recalls and TSBs" body="Review safety recalls and service resources." to="/recalls" />
-      <FeatureCard icon="📍" title="Find shops" body="Search local repair shops by ZIP." to="/shops" />
+      <FeatureCard icon="🧭" title="Start Smart Diagnosis" body="Use guided flow charts with vehicle-aware fuel filtering." to="/diagnose/flows" />
+      <FeatureCard icon="⚠️" title="Code Lookup" body="Explain codes, severity, likely causes, and first checks." to="/diagnose/code" />
+      <FeatureCard icon="🔍" title="VIN Lookup" body="Decode a VIN and save the exact vehicle to this browser." to="/vin" />
+      <FeatureCard icon="🧰" title="Common Issues" body="See failure patterns reported for your year, make, and model." to="/issues" />
+      <FeatureCard icon="📋" title="Recalls" body="Check safety campaigns from the backend recall route." to="/recalls" />
+      <FeatureCard icon="📄" title="TSBs" body="Review technical service bulletins and known service patterns." to="/recalls" />
+      <FeatureCard icon="🔧" title="Parts" body="Open fitment-scoped parts and search hints." to="/parts" />
+      <FeatureCard icon="📍" title="Shops" body="Find nearby repair shops by ZIP and issue." to="/shops" />
     </section>
   </div>;
 }

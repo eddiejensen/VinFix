@@ -4,6 +4,8 @@ import type { EngineOption, SelectedVehicle } from "../types";
 import { normalizeEngineOption, formatEngineOptionLabel } from "../utils/engineOptions";
 import { useVehicle } from "../context/VehicleContext";
 import { ErrorState } from "./ErrorState";
+import type { FuelType } from "../types";
+import { formatFuelTypeLabel, normalizeFuelType } from "../utils/fuelType";
 
 export function VehicleSelector() {
   const { setSelectedVehicle } = useVehicle();
@@ -18,6 +20,8 @@ export function VehicleSelector() {
   const [model, setModel] = useState("");
   const [trim, setTrim] = useState("");
   const [engineValue, setEngineValue] = useState("");
+  const [manualEngine, setManualEngine] = useState("");
+  const [manualFuelType, setManualFuelType] = useState<FuelType>("unknown");
   const [drivetrain, setDrivetrain] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -28,16 +32,16 @@ export function VehicleSelector() {
 
   useEffect(() => {
     if (!year) return;
-    setMake(""); setModel(""); setTrim(""); setEngineValue(""); setModels([]); setTrims([]); setEngines([]); setDrivetrains([]);
+    setMake(""); setModel(""); setTrim(""); setEngineValue(""); setManualEngine(""); setModels([]); setTrims([]); setEngines([]); setDrivetrains([]);
     setLoading(true);
-    api.makes(year).then(setMakes).catch((err) => setError(err.message)).finally(() => setLoading(false));
+    api.makes(year).then(setMakes).catch(() => setError("Could not load makes. Please try again.")).finally(() => setLoading(false));
   }, [year]);
 
   useEffect(() => {
     if (!year || !make) return;
-    setModel(""); setTrim(""); setEngineValue(""); setModels([]); setTrims([]); setEngines([]); setDrivetrains([]);
+    setModel(""); setTrim(""); setEngineValue(""); setManualEngine(""); setModels([]); setTrims([]); setEngines([]); setDrivetrains([]);
     setLoading(true);
-    api.models(year, make).then(setModels).catch((err) => setError(err.message)).finally(() => setLoading(false));
+    api.models(year, make).then(setModels).catch(() => setError("Could not load models. Please try again.")).finally(() => setLoading(false));
   }, [year, make]);
 
   useEffect(() => {
@@ -51,23 +55,31 @@ export function VehicleSelector() {
           const context = { year, make, model, trim };
           setEngines((fit.engines || []).map((item) => normalizeEngineOption(item, context)).filter((item) => item.label));
           setDrivetrains(fit.drivetrains || []);
+        } else {
+          setError("Engine data was not available. You can still continue with manual details.");
         }
       })
-      .catch((err) => setError(err.message))
+      .catch(() => setError("Could not load trim and engine data. You can still continue manually."))
       .finally(() => setLoading(false));
   }, [year, make, model, trim]);
 
   const selectedEngine = useMemo(() => engines.find((e) => e.value === engineValue) || null, [engines, engineValue]);
+  const needsManualFuelType =
+    engines.length === 0 ||
+    !selectedEngine ||
+    selectedEngine.fuelType === "unknown" ||
+    selectedEngine.confidence === "low";
   const canUse = Boolean(year && make && model);
 
   function save() {
-    const fallback = normalizeEngineOption(engineValue || "Unknown engine", { year, make, model, trim });
+    const fallback = normalizeEngineOption(manualEngine || engineValue || "Unknown engine", { year, make, model, trim });
     const engine = selectedEngine || fallback;
+    const fuelType = needsManualFuelType ? normalizeFuelType(manualFuelType) : engine.fuelType;
     const vehicle: SelectedVehicle = {
       year, make, model, trim, drivetrain,
-      engine: engine.label,
-      fuelType: engine.fuelType,
-      fuelTypeConfidence: engine.confidence,
+      engine: engine.label === "Unknown engine" ? manualEngine : engine.label,
+      fuelType,
+      fuelTypeConfidence: needsManualFuelType ? "low" : engine.confidence,
     };
     setSelectedVehicle(vehicle);
   }
@@ -81,9 +93,31 @@ export function VehicleSelector() {
         <label>Make<select value={make} onChange={(e) => setMake(e.target.value)} disabled={!year}><option value="">Select make</option>{makes.map((v) => <option key={v}>{v}</option>)}</select></label>
         <label>Model<select value={model} onChange={(e) => setModel(e.target.value)} disabled={!make}><option value="">Select model</option>{models.map((v) => <option key={v}>{v}</option>)}</select></label>
         <label>Trim<select value={trim} onChange={(e) => setTrim(e.target.value)} disabled={!model || trims.length === 0}><option value="">Optional trim</option>{trims.map((v) => <option key={v}>{v}</option>)}</select></label>
-        <label>Engine<select value={engineValue} onChange={(e) => setEngineValue(e.target.value)} disabled={!model || engines.length === 0}><option value="">{engines.length ? "Select engine" : "Engine optional"}</option>{engines.map((v) => <option key={v.value} value={v.value}>{formatEngineOptionLabel(v)}</option>)}</select></label>
+        {engines.length > 0 ? (
+          <label>Engine<select value={engineValue} onChange={(e) => setEngineValue(e.target.value)} disabled={!model}><option value="">Select engine</option>{engines.map((v) => <option key={v.value} value={v.value}>{formatEngineOptionLabel(v)}</option>)}</select></label>
+        ) : (
+          <label>Engine<input value={manualEngine} onChange={(e) => setManualEngine(e.target.value)} placeholder="Optional engine, if known" disabled={!model} /></label>
+        )}
         <label>Drivetrain<select value={drivetrain} onChange={(e) => setDrivetrain(e.target.value)} disabled={!model || drivetrains.length === 0}><option value="">Optional drivetrain</option>{drivetrains.map((v) => <option key={v}>{v}</option>)}</select></label>
       </div>
+      {canUse && needsManualFuelType ? (
+        <div className="fuel-fallback">
+          <strong>Fuel type</strong>
+          <p>Engine data did not include a confident fuel type. Pick one to keep diagnosis filtered correctly.</p>
+          <div className="chip-row">
+            {(["gasoline", "diesel", "hybrid", "plug_in_hybrid", "electric", "flex_fuel", "unknown"] as FuelType[]).map((fuelType) => (
+              <button
+                className={manualFuelType === fuelType ? "chip active" : "chip"}
+                key={fuelType}
+                onClick={() => setManualFuelType(fuelType)}
+                type="button"
+              >
+                {formatFuelTypeLabel(fuelType)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <button className="primary" disabled={!canUse} onClick={save}>{loading ? "Loading..." : "Use this vehicle"}</button>
     </div>
   );

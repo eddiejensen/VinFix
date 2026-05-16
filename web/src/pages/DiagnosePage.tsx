@@ -8,10 +8,10 @@ export function DiagnosePage() {
     <section className="feature-grid">
       <FeatureCard icon="🧭" title="Diagnostic flow charts" body="Run guided Yes, No, Not sure steps." to="/diagnose/flows" />
       <FeatureCard icon="⚠️" title="Code lookup" body="Look up P codes and likely causes." to="/diagnose/code" />
-      <FeatureCard icon="📷" title="Identify a part" body="Upload a part photo, coming next." to="/diagnose/part-identifier" />
+      <FeatureCard icon="📷" title="Identify a Part" body="Stage a photo and location hint for part identification." to="/diagnose/part-identifier" />
       <FeatureCard icon="🧰" title="Common issues" body="Common failures for selected vehicle." to="/issues" />
-      <FeatureCard icon="📋" title="Recalls" body="Check safety recalls." to="/recalls" />
-      <FeatureCard icon="🔧" title="Parts" body="Browse fitment scoped part categories." to="/parts" />
+      <FeatureCard icon="📋" title="Recalls and TSBs" body="Check safety recalls and service bulletins." to="/recalls" />
+      <FeatureCard icon="🔧" title="Parts Lookup" body="Browse fitment scoped part categories." to="/parts" />
     </section>
   </div>;
 }

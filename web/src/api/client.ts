@@ -15,7 +15,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  years: () => request<string[]>("/years?source=fallback"),
+  years: () => request<string[]>("/years"),
   makes: (year: string) => request<string[]>(`/makes?year=${encodeURIComponent(year)}`),
   models: (year: string, make: string) =>
     request<string[]>(`/models?year=${encodeURIComponent(year)}&make=${encodeURIComponent(make)}`),

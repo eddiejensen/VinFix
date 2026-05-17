@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { SelectedVehicle, VehicleImage } from "../types";
@@ -53,7 +54,7 @@ export function SelectedVehicleCard({ vehicle, compact = false }: { vehicle: Sel
           <span>{vehicle.make?.slice(0, 1) || "V"}</span>
         )}
       </div>
-      <div>
+      <div className="selected-vehicle-copy">
         <span className="eyebrow">Selected vehicle</span>
         <h3>{vehicleName(vehicle)}</h3>
         <p>{[vehicle.engine, vehicle.transmission, vehicle.drivetrain].filter(Boolean).join(", ") || "Engine details not selected"}</p>
@@ -69,7 +70,10 @@ export function SelectedVehicleCard({ vehicle, compact = false }: { vehicle: Sel
           </dl>
         ) : null}
       </div>
-      <FuelTypeBadge fuelType={vehicle.fuelType} />
+      <div className="selected-vehicle-actions">
+        <FuelTypeBadge fuelType={vehicle.fuelType} />
+        {compact ? <Link className="secondary change-vehicle-link" to="/profile">Change Vehicle</Link> : null}
+      </div>
     </div>
   );
 }

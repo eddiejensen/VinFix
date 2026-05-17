@@ -2,7 +2,7 @@ const WIKIPEDIA_API_URL = 'https://en.wikipedia.org/w/api.php';
 const COMMONS_API_URL = 'https://commons.wikimedia.org/w/api.php';
 const REQUEST_TIMEOUT_MS = 6000;
 const WIKIMEDIA_HEADERS = {
-  'User-Agent': 'VinFix/1.0 (local development; vehicle image lookup)',
+  'User-Agent': 'AutoVinFix/1.0 (vehicle image lookup)',
 };
 
 function normalizeText(value) {

@@ -9,7 +9,7 @@ services:
       - key: DATABASE_URL
         sync: false
   - type: web
-    name: vinfix
+    name: autovinfix
     env: static
     rootDir: web
     buildCommand: npm install && npm run build

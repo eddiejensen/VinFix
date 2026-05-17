@@ -3822,7 +3822,7 @@ app.post('/learning/recommend', async (req, res) => {
     res.json({
       sessionId: diagnosticSessionId,
       disclaimer:
-        'VinFix Smart Diagnosis is a recommendation based on symptoms, vehicle history, and common failures. Confirm with testing before replacing parts.',
+        'AutoVinFix Smart Diagnosis is a recommendation based on symptoms, vehicle history, and common failures. Confirm with testing before replacing parts.',
       suggestions,
     });
   } catch (error) {

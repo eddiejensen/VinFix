@@ -15,7 +15,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return json as T;
   } catch (error) {
     if (import.meta.env.DEV) {
-      console.error("VinFix API request failed", { path, error });
+      console.error("AutoVinFix API request failed", { path, error });
     }
     throw error;
   }

@@ -11,8 +11,8 @@ export function ProfilePage() {
       <PageTitle title="Profile" />
       <div className="page-head">
         <span className="eyebrow">Profile</span>
-        <h1>Your VinFix setup</h1>
-        <p>Select a vehicle to personalize diagnostics across VinFix.</p>
+        <h1>Your AutoVinFix setup</h1>
+        <p>Select a vehicle to personalize diagnostics across AutoVinFix.</p>
       </div>
       <SelectedVehicleCard vehicle={selectedVehicle} />
       {selectedVehicle ? (

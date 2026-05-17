@@ -21,7 +21,7 @@ export function AppLayout() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand"><span>VF</span><div><strong>VinFix</strong><small>Smart Diagnosis</small></div></div>
+        <div className="brand"><span>AVF</span><div><strong>AutoVinFix</strong><small>Smart Diagnosis</small></div></div>
         <nav>
           {links.map(([to, label, icon]) => <NavLink key={to} to={to}>{icon} {label}</NavLink>)}
           {secondaryLinks.map(([to, label, icon]) => <NavLink key={to} to={to}>{icon} {label}</NavLink>)}

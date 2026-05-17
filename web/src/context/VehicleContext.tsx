@@ -9,8 +9,8 @@ interface VehicleContextValue {
 }
 
 const VehicleContext = createContext<VehicleContextValue | null>(null);
-const STORAGE_KEY = "vinfix:selectedVehicle";
-const LEGACY_STORAGE_KEY = "vinfix_selected_vehicle_v1";
+const STORAGE_KEY = "autovinfix:selectedVehicle";
+const LEGACY_STORAGE_KEYS = ["vinfix:selectedVehicle", "vinfix_selected_vehicle_v1"];
 
 function normalizeVehicleFromUnknown(value: any): SelectedVehicle | null {
   if (!value?.year || !value?.make || !value?.model) return null;
@@ -64,7 +64,9 @@ export function VehicleProvider({ children }: { children: React.ReactNode }) {
     try {
       const urlVehicle = vehicleFromUrl();
       if (urlVehicle) return urlVehicle;
-      const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+      const raw =
+        localStorage.getItem(STORAGE_KEY) ||
+        LEGACY_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
       return raw ? normalizeVehicleFromUnknown(JSON.parse(raw)) : null;
     } catch {
       return null;

@@ -21,11 +21,13 @@ export interface TodoEntry {
 }
 
 export const STORAGE_KEYS = {
-  garage: "vinfix:garage",
-  repairHistory: "vinfix:repairHistory",
-  todos: "vinfix:todos",
-  diagnosticNotes: "vinfix:diagnosticNotes",
+  garage: "autovinfix:garage",
+  repairHistory: "autovinfix:repairHistory",
+  todos: "autovinfix:todos",
+  diagnosticNotes: "autovinfix:diagnosticNotes",
 };
+
+const LEGACY_PREFIX = "vinfix:";
 
 export function vehicleKey(vehicle: Pick<SelectedVehicle, "year" | "make" | "model" | "trim" | "engine">) {
   return [vehicle.year, vehicle.make, vehicle.model, vehicle.trim, vehicle.engine]
@@ -36,7 +38,8 @@ export function vehicleKey(vehicle: Pick<SelectedVehicle, "year" | "make" | "mod
 
 export function readLocalArray<T>(key: string): T[] {
   try {
-    const raw = localStorage.getItem(key);
+    const legacyKey = key.startsWith("autovinfix:") ? key.replace("autovinfix:", LEGACY_PREFIX) : "";
+    const raw = localStorage.getItem(key) || (legacyKey ? localStorage.getItem(legacyKey) : null);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];

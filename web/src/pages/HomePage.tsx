@@ -11,7 +11,7 @@ export function HomePage() {
   return <div className="page home-page">
     <PageTitle title="Home" />
     <section className="hero-panel">
-      <div><span className="eyebrow">VinFix diagnostics</span><h1>Smart vehicle diagnosis, built for real symptoms.</h1><p>Select your vehicle, decode a VIN, look up trouble codes, and start guided diagnostics with year, make, model, and engine context.</p><Link className="primary link" to="/diagnose">Start diagnosis</Link></div>
+      <div><span className="eyebrow">AutoVinFix diagnostics</span><h1>Smart vehicle diagnosis, built for real symptoms.</h1><p>Select your vehicle, decode a VIN, look up trouble codes, and start guided diagnostics with year, make, model, and engine context.</p><Link className="primary link" to="/diagnose">Start diagnosis</Link></div>
       <div className="hero-card"><SelectedVehicleCard vehicle={selectedVehicle} /><VehicleImageCard vehicle={selectedVehicle} /></div>
     </section>
     <VehicleSelector />

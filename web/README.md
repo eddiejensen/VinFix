@@ -1,6 +1,6 @@
-# VinFix Web
+# AutoVinFix Web
 
-Website first React app for VinFix.
+Website first React app for AutoVinFix.
 
 ## Run locally
 

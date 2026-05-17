@@ -15,6 +15,8 @@ export function normalizeEngineOption(option: unknown, vehicle?: Partial<Selecte
     fuelType,
     confidence: raw.confidence || inferred.confidence,
     source: raw.source || "engineOption",
+    verified: Boolean(raw.verified),
+    notes: raw.notes || "",
   };
 }
 

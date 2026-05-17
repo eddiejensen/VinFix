@@ -16,6 +16,8 @@ export interface EngineOption {
   fuelType: FuelType;
   confidence: Confidence;
   source?: string;
+  verified?: boolean;
+  notes?: string;
 }
 
 export interface SelectedVehicle {

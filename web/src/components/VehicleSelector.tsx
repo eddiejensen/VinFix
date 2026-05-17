@@ -59,22 +59,32 @@ export function VehicleSelector() {
 
   useEffect(() => {
     if (!year || !make || !model) return;
+    setError("");
     setLoading(true);
-    Promise.allSettled([api.trims(year, make, model), api.fitment({ year, make, model, trim })])
+    Promise.allSettled([api.trims(year, make, model), api.fitment({ year, make, model, trim, drivetrain })])
       .then(([trimsResult, fitmentResult]) => {
         if (trimsResult.status === "fulfilled") setTrims(Array.from(new Set(trimsResult.value || [])));
         if (fitmentResult.status === "fulfilled") {
           const fit = fitmentResult.value;
-          const context = { year, make, model, trim };
-          setEngines((fit.engines || []).map((item) => normalizeEngineOption(item, context)).filter((item) => item.label));
+          const context = { year, make, model, trim, drivetrain };
+          const nextEngines = (fit.engines || []).map((item) => normalizeEngineOption(item, context)).filter((item) => item.label);
+          setEngines(nextEngines);
+          if (engineValue && !nextEngines.some((item) => item.value === engineValue)) {
+            setEngineValue("");
+          }
           setDrivetrains(Array.from(new Set(fit.drivetrains || [])));
+          if (trim && drivetrain && nextEngines.length === 0) {
+            setWarning("Engine options need verification for this vehicle.");
+          } else if (nextEngines.length > 0) {
+            setWarning("");
+          }
         } else {
           setError("Engine data was not available. You can still continue with manual details.");
         }
       })
       .catch(() => setError("Could not load trim and engine data. You can still continue manually."))
       .finally(() => setLoading(false));
-  }, [year, make, model, trim]);
+  }, [year, make, model, trim, drivetrain]);
 
   const selectedEngine = useMemo(() => engines.find((e) => e.value === engineValue) || null, [engines, engineValue]);
   const needsManualFuelType =
@@ -88,6 +98,14 @@ export function VehicleSelector() {
   function save() {
     if (!year || !make || !model) {
       setError("Year, make, and model are required.");
+      return;
+    }
+    if (drivetrains.length > 0 && drivetrain && !drivetrains.includes(drivetrain)) {
+      setError("The selected drivetrain is not valid for this vehicle.");
+      return;
+    }
+    if (engines.length > 0 && engineValue && !selectedEngine) {
+      setError("The selected engine is not valid for this trim and drivetrain.");
       return;
     }
 

@@ -307,9 +307,10 @@ const VEHICLE_OPTIONS_DB = [
   { year: '*', make: 'HYUNDAI', model: 'SANTA FE', trim: 'XRT', series: null, drivetrain: 'AWD', engine: '2.5L I4' },
   { year: '*', make: 'HYUNDAI', model: 'SANTA FE', trim: 'LIMITED', series: null, drivetrain: 'AWD', engine: '2.5L I4 Turbo' },
 
-  { year: '*', make: 'GMC', model: 'YUKON', trim: 'SLE', series: null, drivetrain: '2WD', engine: '5.3L V8' },
-  { year: '*', make: 'GMC', model: 'YUKON', trim: 'SLE', series: null, drivetrain: '4WD', engine: '5.3L V8' },
-  { year: '*', make: 'GMC', model: 'YUKON', trim: 'DENALI', series: null, drivetrain: '4WD', engine: '6.2L V8' },
+  { year: '*', make: 'GMC', model: 'YUKON', trim: 'SLE', series: null, drivetrain: '2WD', engine: '5.3L V8', verified: false, source: 'local fallback catalog', notes: 'Broad fallback option; verify exact year and trim before use.' },
+  { year: '*', make: 'GMC', model: 'YUKON', trim: 'SLE', series: null, drivetrain: '4WD', engine: '5.3L V8', verified: false, source: 'local fallback catalog', notes: 'Broad fallback option; verify exact year and trim before use.' },
+  { year: '*', make: 'GMC', model: 'YUKON', trim: 'DENALI', series: null, drivetrain: '4WD', engine: '6.2L V8', verified: false, source: 'local fallback catalog', notes: 'Broad late-model Yukon fallback; do not use for Yukon XL.' },
+  { year: '2005', make: 'GMC', model: 'YUKON XL', trim: 'DENALI', series: null, drivetrain: '4WD', engine: '6.0L V8', fuelType: 'gasoline', verified: true, source: 'verified local fitment correction', notes: 'Correct engine for 2005 GMC Yukon XL Denali 4WD.' },
 ];
 
 const MODEL_ALIASES = {
@@ -903,6 +904,8 @@ function normalizeEngineOption(engineOption, vehicle = {}) {
     fuelType,
     confidence: raw.confidence || (fuelType === inferred.fuelType ? inferred.confidence : 'high'),
     source: raw.source || 'engineOption',
+    verified: Boolean(raw.verified),
+    notes: raw.notes || '',
   };
 }
 
@@ -1356,7 +1359,7 @@ function resolveVehicleOptionRecords(year, make, model) {
   const normalizedModel = normalizeModel(model);
   const requestedCanonicalModel = canonicalizeModel(normalizedModel);
 
-  return VEHICLE_OPTIONS_DB.filter((entry) => {
+  const matchingRecords = VEHICLE_OPTIONS_DB.filter((entry) => {
     const canonicalEntryModel = canonicalizeModel(entry.model);
     const yearMatches = entry.year === '*' || normalizeText(entry.year) === normalizedYear;
     const makeMatches = normalizeText(entry.make) === normalizedMake;
@@ -1367,9 +1370,15 @@ function resolveVehicleOptionRecords(year, make, model) {
 
     return yearMatches && makeMatches && modelMatches;
   });
+
+  const exactModelMatches = matchingRecords.filter(
+    (entry) => canonicalizeModel(entry.model) === requestedCanonicalModel
+  );
+
+  return exactModelMatches.length > 0 ? exactModelMatches : matchingRecords;
 }
 
-function resolveFitmentOptions(year, make, model, selectedTrim = '') {
+function resolveFitmentOptions(year, make, model, selectedTrim = '', selectedDrivetrain = '') {
   const matchingRecords = resolveVehicleOptionRecords(year, make, model);
 
   if (matchingRecords.length === 0) {
@@ -1381,12 +1390,27 @@ function resolveFitmentOptions(year, make, model, selectedTrim = '') {
   }
 
   const normalizedSelectedTrim = normalizeText(selectedTrim);
-  const filteredRecords =
+  const trimFilteredRecords =
     normalizedSelectedTrim
       ? matchingRecords.filter((entry) => normalizeText(buildTrimLabel(entry)) === normalizedSelectedTrim)
       : matchingRecords;
+  const normalizedSelectedDrivetrain = normalizeText(selectedDrivetrain);
+  const filteredRecords =
+    normalizedSelectedDrivetrain
+      ? trimFilteredRecords.filter((entry) => normalizeText(entry.drivetrain) === normalizedSelectedDrivetrain)
+      : trimFilteredRecords;
 
-  const workingRecords = filteredRecords.length > 0 ? filteredRecords : matchingRecords;
+  if (normalizedSelectedDrivetrain && filteredRecords.length === 0) {
+    return {
+      trims: sortStrings(trimFilteredRecords.map((entry) => buildTrimLabel(entry)).filter(Boolean)),
+      drivetrains: sortStrings(trimFilteredRecords.map((entry) => entry.drivetrain).filter(Boolean)),
+      engines: [],
+      verified: false,
+      notes: ['Engine options need verification for this vehicle.'],
+    };
+  }
+
+  const workingRecords = filteredRecords.length > 0 ? filteredRecords : trimFilteredRecords;
 
   return {
     trims: sortStrings(workingRecords.map((entry) => buildTrimLabel(entry)).filter(Boolean)),
@@ -1396,18 +1420,30 @@ function resolveFitmentOptions(year, make, model, selectedTrim = '') {
         new Map(
           workingRecords
             .map((entry) =>
-              normalizeEngineOption(entry.engine, {
+              normalizeEngineOption(
+                {
+                  label: entry.engine,
+                  value: entry.engine,
+                  fuelType: entry.fuelType,
+                  source: entry.source,
+                  verified: entry.verified,
+                  notes: entry.notes,
+                },
+                {
                 year,
                 make,
                 model,
                 trim: buildTrimLabel(entry),
-              })
+                }
+              )
             )
             .filter((option) => option.label && option.value)
             .map((option) => [option.value, option])
         ).values()
       )
     ),
+    verified: workingRecords.some((entry) => entry.verified === true),
+    notes: workingRecords.map((entry) => entry.notes).filter(Boolean),
   };
 }
 
@@ -2354,7 +2390,7 @@ app.get('/trims', async (req, res) => {
 });
 
 app.get('/fitment-options', (req, res) => {
-  const { year, make, model, trim } = req.query;
+  const { year, make, model, trim, drivetrain } = req.query;
 
   if (!year || !make || !model) {
     return res.status(400).json({ error: 'year, make, and model are required' });
@@ -2381,15 +2417,17 @@ app.get('/fitment-options', (req, res) => {
       }
 
       const fitmentFromCarApi = buildVehicleOptionMatrixFromCarApi(formattedTrims, engineRecords);
-      const fallbackFitment = resolveFitmentOptions(year, make, model, trim);
+      const fallbackFitment = resolveFitmentOptions(year, make, model, trim, drivetrain);
       const fitmentOptions = {
-        trims: fitmentFromCarApi.trims.length > 0 ? fitmentFromCarApi.trims : fallbackFitment.trims,
-        engines: fitmentFromCarApi.engines.length > 0 ? fitmentFromCarApi.engines : fallbackFitment.engines,
+        trims: fallbackFitment.verified || fitmentFromCarApi.trims.length === 0 ? fallbackFitment.trims : fitmentFromCarApi.trims,
+        engines: fallbackFitment.verified || fitmentFromCarApi.engines.length === 0 ? fallbackFitment.engines : fitmentFromCarApi.engines,
         drivetrains:
-          fitmentFromCarApi.drivetrains.length > 0
-            ? fitmentFromCarApi.drivetrains
-            : fallbackFitment.drivetrains,
+          fallbackFitment.verified || fitmentFromCarApi.drivetrains.length === 0
+            ? fallbackFitment.drivetrains
+            : fitmentFromCarApi.drivetrains,
         transmissions: fitmentFromCarApi.transmissions,
+        verified: fallbackFitment.verified,
+        notes: fallbackFitment.notes,
       };
 
       if (
@@ -2409,14 +2447,14 @@ app.get('/fitment-options', (req, res) => {
     .catch((error) => {
       console.error('Fitment options lookup error:', error.message);
       res.json({
-        ...resolveFitmentOptions(year, make, model, trim),
+        ...resolveFitmentOptions(year, make, model, trim, drivetrain),
         transmissions: [],
       });
     });
 });
 
 app.get('/engine-drivetrain-options', async (req, res) => {
-  const { year, make, model, trim } = req.query;
+  const { year, make, model, trim, drivetrain } = req.query;
 
   if (!year || !make || !model) {
     return res.status(400).json({ error: 'year, make, and model are required' });
@@ -2436,21 +2474,23 @@ app.get('/engine-drivetrain-options', async (req, res) => {
     );
 
     const fitmentFromCarApi = buildVehicleOptionMatrixFromCarApi(formattedTrims, engineRecords);
-    const fallbackFitment = resolveFitmentOptions(year, make, model, trim);
+    const fallbackFitment = resolveFitmentOptions(year, make, model, trim, drivetrain);
 
     res.json({
-      trims: fitmentFromCarApi.trims.length > 0 ? fitmentFromCarApi.trims : fallbackFitment.trims,
-      engines: fitmentFromCarApi.engines.length > 0 ? fitmentFromCarApi.engines : fallbackFitment.engines,
+      trims: fallbackFitment.verified || fitmentFromCarApi.trims.length === 0 ? fallbackFitment.trims : fitmentFromCarApi.trims,
+      engines: fallbackFitment.verified || fitmentFromCarApi.engines.length === 0 ? fallbackFitment.engines : fitmentFromCarApi.engines,
       drivetrains:
-        fitmentFromCarApi.drivetrains.length > 0
-          ? fitmentFromCarApi.drivetrains
-          : fallbackFitment.drivetrains,
+        fallbackFitment.verified || fitmentFromCarApi.drivetrains.length === 0
+          ? fallbackFitment.drivetrains
+          : fitmentFromCarApi.drivetrains,
       transmissions: fitmentFromCarApi.transmissions,
+      verified: fallbackFitment.verified,
+      notes: fallbackFitment.notes,
     });
   } catch (error) {
     console.error('Engine and drivetrain options lookup error:', error.message);
     res.json({
-      ...resolveFitmentOptions(year, make, model, trim),
+      ...resolveFitmentOptions(year, make, model, trim, drivetrain),
       transmissions: [],
     });
   }

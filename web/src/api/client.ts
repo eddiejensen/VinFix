@@ -47,9 +47,10 @@ export function getTrims(year: string, make: string, model: string) {
   );
 }
 
-export function getEngineDrivetrainOptions(year: string, make: string, model: string, trim = "") {
+export function getEngineDrivetrainOptions(year: string, make: string, model: string, trim = "", drivetrain = "") {
   const params = new URLSearchParams({ year, make, model });
   if (trim) params.set("trim", trim);
+  if (drivetrain) params.set("drivetrain", drivetrain);
   return request<{ trims: string[]; engines: unknown[]; drivetrains: string[]; transmissions?: string[] }>(
     `/engine-drivetrain-options?${params.toString()}`
   );
@@ -116,8 +117,8 @@ export const api = {
   makes: getMakes,
   models: getModels,
   trims: getTrims,
-  fitment: (vehicle: Pick<SelectedVehicle, "year" | "make" | "model" | "trim">) =>
-    getEngineDrivetrainOptions(vehicle.year, vehicle.make, vehicle.model, vehicle.trim),
+  fitment: (vehicle: Pick<SelectedVehicle, "year" | "make" | "model" | "trim" | "drivetrain">) =>
+    getEngineDrivetrainOptions(vehicle.year, vehicle.make, vehicle.model, vehicle.trim, vehicle.drivetrain),
   vin: decodeVin,
   code: lookupDiagnosticCode,
   commonIssues: getCommonIssues,

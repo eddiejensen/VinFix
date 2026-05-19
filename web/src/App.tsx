@@ -16,6 +16,7 @@ import { ProfilePage } from "./pages/ProfilePage";
 import { GaragePage } from "./pages/GaragePage";
 import { TodosPage } from "./pages/TodosPage";
 import { CostsPage } from "./pages/CostsPage";
+import { LoginPage } from "./pages/LoginPage";
 
 const router = createBrowserRouter([
   { path: "/", element: <AppLayout />, children: [
@@ -35,6 +36,7 @@ const router = createBrowserRouter([
     { path: "todos", element: <TodosPage /> },
     { path: "costs", element: <CostsPage /> },
     { path: "profile", element: <ProfilePage /> },
+    { path: "login", element: <LoginPage /> },
   ] }
 ]);
 

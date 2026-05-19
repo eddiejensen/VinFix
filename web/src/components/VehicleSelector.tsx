@@ -6,6 +6,8 @@ import { useVehicle } from "../context/VehicleContext";
 import { ErrorState } from "./ErrorState";
 import type { FuelType } from "../types";
 import { formatFuelTypeLabel, normalizeFuelType } from "../utils/fuelType";
+import { vehicleCompletenessScore } from "../utils/vehicleCompleteness";
+import { trackEvent } from "../utils/analytics";
 
 export function VehicleSelector() {
   const { selectedVehicle, setSelectedVehicle } = useVehicle();
@@ -119,28 +121,54 @@ export function VehicleSelector() {
       fuelTypeConfidence: needsManualFuelType ? "low" : engine.confidence,
     };
     if (!selectedEngine && !manualEngine.trim()) {
-      setWarning("Engine was not selected. Some diagnostic results may be less specific.");
+      setWarning("Select the engine so results match your exact vehicle.");
     } else {
       setWarning("");
     }
     setSelectedVehicle(vehicle);
+    trackEvent("vehicle_selected", {
+      year,
+      make,
+      model,
+      trim,
+      engine: vehicle.engine,
+      drivetrain,
+      hasEngine: Boolean(vehicle.engine),
+    });
   }
+
+  const setupProgress = vehicleCompletenessScore(
+    year && make && model
+      ? {
+          year,
+          make,
+          model,
+          trim,
+          engine: engineValue || manualEngine,
+          drivetrain,
+          fuelType: manualFuelType,
+          fuelTypeConfidence: "low",
+        }
+      : null
+  );
 
   return (
     <div className="card vehicle-selector">
       <div className="section-title"><span className="eyebrow">Start here</span><h2>Select your vehicle</h2></div>
       {error && <ErrorState message={error} />}
       {warning && <div className="state warning">{warning}</div>}
+      <p className="muted">Required for accurate results: year, make, model, and engine.</p>
+      {year && make && model ? <p className="muted vehicle-progress">{setupProgress.label}</p> : null}
       <p className="muted">Vehicle lists are based on available catalog data. If your trim is missing, use VIN lookup.</p>
       <div className="form-grid">
-        <label>Year<select value={year} onChange={(e) => setYear(e.target.value)}><option value="">Select year</option>{years.map((v) => <option key={v}>{v}</option>)}</select></label>
-        <label>Make<select value={make} onChange={(e) => setMake(e.target.value)} disabled={!year}><option value="">Select make</option>{makes.map((v) => <option key={v}>{v}</option>)}</select></label>
-        <label>Model<select value={model} onChange={(e) => setModel(e.target.value)} disabled={!make}><option value="">Select model</option>{models.map((v) => <option key={v}>{v}</option>)}</select></label>
+        <label>Year<span className="required-mark">*</span><select value={year} onChange={(e) => setYear(e.target.value)}><option value="">Select year</option>{years.map((v) => <option key={v}>{v}</option>)}</select></label>
+        <label>Make<span className="required-mark">*</span><select value={make} onChange={(e) => setMake(e.target.value)} disabled={!year}><option value="">Select make</option>{makes.map((v) => <option key={v}>{v}</option>)}</select></label>
+        <label>Model<span className="required-mark">*</span><select value={model} onChange={(e) => setModel(e.target.value)} disabled={!make}><option value="">Select model</option>{models.map((v) => <option key={v}>{v}</option>)}</select></label>
         <label>Trim<select value={trim} onChange={(e) => setTrim(e.target.value)} disabled={!model || trims.length === 0}><option value="">Optional trim</option>{trims.map((v) => <option key={v}>{v}</option>)}</select></label>
         {engines.length > 0 ? (
-          <label>Engine<select value={engineValue} onChange={(e) => setEngineValue(e.target.value)} disabled={!model}><option value="">Select engine</option>{engines.map((v) => <option key={v.value} value={v.value}>{formatEngineOptionLabel(v)}</option>)}</select></label>
+          <label>Engine<span className="required-mark">*</span><select value={engineValue} onChange={(e) => setEngineValue(e.target.value)} disabled={!model}><option value="">Select engine</option>{engines.map((v) => <option key={v.value} value={v.value}>{formatEngineOptionLabel(v)}</option>)}</select></label>
         ) : (
-          <label>Engine<input value={manualEngine} onChange={(e) => setManualEngine(e.target.value)} placeholder="Optional engine, if known" disabled={!model} /></label>
+          <label>Engine<span className="required-mark">*</span><input value={manualEngine} onChange={(e) => setManualEngine(e.target.value)} placeholder="Optional engine, if known" disabled={!model} /></label>
         )}
         <label>Drivetrain<select value={drivetrain} onChange={(e) => setDrivetrain(e.target.value)} disabled={!model || drivetrains.length === 0}><option value="">Optional drivetrain</option>{drivetrains.map((v) => <option key={v}>{v}</option>)}</select></label>
       </div>

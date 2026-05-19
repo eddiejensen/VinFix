@@ -27,6 +27,9 @@ export const STORAGE_KEYS = {
   diagnosticNotes: "autovinfix:diagnosticNotes",
 };
 
+export const LOCAL_DATA_SYNC_EVENT = "autovinfix:local-data-sync";
+export const CLOUD_DATA_RESTORE_EVENT = "autovinfix:cloud-data-restore";
+
 const LEGACY_PREFIX = "vinfix:";
 
 export function vehicleKey(vehicle: Pick<SelectedVehicle, "year" | "make" | "model" | "trim" | "engine">) {
@@ -48,6 +51,7 @@ export function readLocalArray<T>(key: string): T[] {
 
 export function writeLocalArray<T>(key: string, value: T[]) {
   localStorage.setItem(key, JSON.stringify(value));
+  window.dispatchEvent(new CustomEvent(LOCAL_DATA_SYNC_EVENT));
 }
 
 export function makeId(prefix: string) {

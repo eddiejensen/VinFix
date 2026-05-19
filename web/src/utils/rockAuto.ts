@@ -36,7 +36,27 @@ function slugifyCatalogSegment(value: unknown) {
   return normalizeKeySegment(value).replace(/\s+/g, "+");
 }
 
+const ROCKAUTO_CATEGORY_SLUGS: Record<string, string> = {
+  "body & lamp assembly": "body+&+lamp+assembly",
+  "brake & wheel hub": "brake+&+wheel+hub",
+  "cooling system": "cooling+system",
+  "drivetrain": "drivetrain",
+  "electrical": "electrical",
+  "engine": "engine",
+  "exhaust & emission": "exhaust+&+emission",
+  "fuel & air": "fuel+&+air",
+  "heat & air conditioning": "heat+&+air+conditioning",
+  "ignition": "ignition",
+  "interior": "interior",
+  "steering": "steering",
+  "suspension": "suspension",
+  "transmission-transaxle": "transmission-transaxle",
+  "wiper & washer": "wiper+&+washer",
+};
+
 function slugifyCategory(value: unknown) {
+  const key = normalizeKeySegment(value);
+  if (ROCKAUTO_CATEGORY_SLUGS[key]) return ROCKAUTO_CATEGORY_SLUGS[key];
   return String(value || "")
     .trim()
     .toLowerCase()

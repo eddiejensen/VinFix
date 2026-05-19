@@ -506,6 +506,37 @@ function verifyPassword(password, storedHash = '') {
   );
 }
 
+async function seedDefaultUsers() {
+  const users = [
+    { email: 'Monty@test.com', password: 'Test', fullName: 'Monty' },
+    { email: 'Eddie@test.com', password: 'test', fullName: 'Eddie' },
+  ];
+
+  for (const user of users) {
+    const existing = await pool.query(
+      `SELECT id FROM auth_users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+      [user.email]
+    );
+
+    if (existing.rows.length > 0) {
+      await pool.query(
+        `UPDATE auth_users
+         SET password_hash = $2,
+             full_name = COALESCE(full_name, $3)
+         WHERE LOWER(email) = LOWER($1)`,
+        [user.email, hashPassword(user.password), user.fullName]
+      );
+      continue;
+    }
+
+    await pool.query(
+      `INSERT INTO auth_users (email, password_hash, full_name, plan)
+       VALUES ($1, $2, $3, 'free')`,
+      [user.email, hashPassword(user.password), user.fullName]
+    );
+  }
+}
+
 function getCachedValue(key) {
   const cached = APP_CACHE.get(key);
 
@@ -1688,6 +1719,25 @@ async function initializeDatabase() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS account_saved_data (
+      user_id INT PRIMARY KEY REFERENCES auth_users(id) ON DELETE CASCADE,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id SERIAL PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      user_id INT REFERENCES auth_users(id) ON DELETE SET NULL,
+      event_name TEXT NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS vehicles (
       id SERIAL PRIMARY KEY,
       vin TEXT UNIQUE,
@@ -1794,6 +1844,8 @@ async function initializeDatabase() {
     );
   `);
 
+  await seedDefaultUsers();
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS diagnostic_sessions (
       id SERIAL PRIMARY KEY,
@@ -1893,7 +1945,7 @@ async function getSessionFromRequest(req) {
   }
 
   const result = await pool.query(
-    `SELECT s.*, u.email, u.full_name
+    `SELECT s.*, u.email, u.full_name, u.plan
      FROM auth_sessions s
      LEFT JOIN auth_users u ON u.id = s.user_id
      WHERE s.session_token = $1`,
@@ -2213,7 +2265,7 @@ app.post('/auth/login', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT id, email, full_name, password_hash
+      `SELECT id, email, full_name, plan, password_hash
        FROM auth_users
        WHERE LOWER(email) = LOWER($1)
        LIMIT 1`,
@@ -2243,6 +2295,7 @@ app.post('/auth/login', async (req, res) => {
         id: user.id,
         email: user.email,
         fullName: user.full_name,
+        plan: user.plan || 'free',
       },
     });
   } catch (error) {
@@ -2267,6 +2320,7 @@ app.get('/auth/session', async (req, res) => {
             id: session.user_id,
             email: session.email,
             fullName: session.full_name,
+            plan: session.plan || 'free',
           }
         : null,
     });
@@ -2288,6 +2342,82 @@ app.post('/auth/logout', async (req, res) => {
   } catch (error) {
     console.error('Logout error:', error.message);
     res.status(500).json({ error: 'Could not log out' });
+  }
+});
+
+app.post('/analytics/events', async (req, res) => {
+  try {
+    const sessionId = String(req.body?.sessionId || '').trim();
+    const eventName = String(req.body?.eventName || '').trim();
+    const payload = req.body?.payload && typeof req.body.payload === 'object' ? req.body.payload : {};
+
+    if (!sessionId || !eventName) {
+      return res.status(400).json({ error: 'sessionId and eventName are required' });
+    }
+
+    const session = await getSessionFromRequest(req).catch(() => null);
+
+    await pool.query(
+      `INSERT INTO analytics_events (session_id, user_id, event_name, payload)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [sessionId.slice(0, 120), session?.user_id || null, eventName.slice(0, 120), JSON.stringify(payload)]
+    );
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Analytics event error:', error.message);
+    res.status(500).json({ error: 'Could not record analytics event' });
+  }
+});
+
+app.get('/account/data', async (req, res) => {
+  try {
+    const session = await getSessionFromRequest(req);
+
+    if (!session?.user_id) {
+      return res.status(401).json({ error: 'Must be logged in' });
+    }
+
+    const result = await pool.query(
+      `SELECT data, updated_at FROM account_saved_data WHERE user_id = $1`,
+      [session.user_id]
+    );
+
+    res.json({
+      data: result.rows[0]?.data || {},
+      updatedAt: result.rows[0]?.updated_at || null,
+    });
+  } catch (error) {
+    console.error('Account data fetch error:', error.message);
+    res.status(500).json({ error: 'Could not load saved account data' });
+  }
+});
+
+app.put('/account/data', async (req, res) => {
+  try {
+    const session = await getSessionFromRequest(req);
+
+    if (!session?.user_id) {
+      return res.status(401).json({ error: 'Must be logged in' });
+    }
+
+    const data = req.body?.data && typeof req.body.data === 'object' ? req.body.data : {};
+    const result = await pool.query(
+      `INSERT INTO account_saved_data (user_id, data, updated_at)
+       VALUES ($1, $2, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id)
+       DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP
+       RETURNING data, updated_at`,
+      [session.user_id, data]
+    );
+
+    res.json({
+      data: result.rows[0].data,
+      updatedAt: result.rows[0].updated_at,
+    });
+  } catch (error) {
+    console.error('Account data save error:', error.message);
+    res.status(500).json({ error: 'Could not save account data' });
   }
 });
 

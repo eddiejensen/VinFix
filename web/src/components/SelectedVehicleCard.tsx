@@ -5,6 +5,7 @@ import type { SelectedVehicle, VehicleImage } from "../types";
 import { FuelTypeBadge } from "./FuelTypeBadge";
 import { formatFuelTypeLabel } from "../utils/fuelType";
 import { isVehicleImageCompatible } from "../utils/vehicleImages";
+import { isVehicleComplete, vehicleCompletenessScore, vehicleSummaryLine } from "../utils/vehicleCompleteness";
 
 export function vehicleName(vehicle: SelectedVehicle) {
   return [vehicle.year, vehicle.make, vehicle.model, vehicle.trim].filter(Boolean).join(" ");
@@ -41,15 +42,19 @@ export function SelectedVehicleCard({ vehicle, compact = false }: { vehicle: Sel
       <div className="selected-vehicle empty">
         <strong>No vehicle selected</strong>
         <span>Select a vehicle to personalize diagnostics across AutoVinFix.</span>
+        <Link className="secondary change-vehicle-link" to="/profile">Select vehicle</Link>
       </div>
     );
   }
+
+  const complete = isVehicleComplete(vehicle);
+  const progress = vehicleCompletenessScore(vehicle);
 
   return (
     <div className={`selected-vehicle ${compact ? "compact" : ""}`}>
       <div className="selected-vehicle-media">
         {image?.thumbnailUrl || image?.imageUrl ? (
-          <img src={image.thumbnailUrl || image.imageUrl} alt={vehicleName(vehicle)} />
+          <img src={image.thumbnailUrl || image.imageUrl} alt={`Representative ${vehicleName(vehicle)}`} />
         ) : (
           <span>{vehicle.make?.slice(0, 1) || "V"}</span>
         )}
@@ -57,7 +62,8 @@ export function SelectedVehicleCard({ vehicle, compact = false }: { vehicle: Sel
       <div className="selected-vehicle-copy">
         <span className="eyebrow">Selected vehicle</span>
         <h3>{vehicleName(vehicle)}</h3>
-        <p>{[vehicle.engine, vehicle.transmission, vehicle.drivetrain].filter(Boolean).join(", ") || "Engine details not selected"}</p>
+        <p>{vehicleSummaryLine(vehicle)}</p>
+        {!compact ? <p className="muted vehicle-progress">{progress.label}</p> : null}
         {!compact ? (
           <dl className="vehicle-detail-grid">
             <div><dt>Year</dt><dd>{vehicle.year}</dd></div>
@@ -71,8 +77,9 @@ export function SelectedVehicleCard({ vehicle, compact = false }: { vehicle: Sel
         ) : null}
       </div>
       <div className="selected-vehicle-actions">
-        <FuelTypeBadge fuelType={vehicle.fuelType} />
-        {compact ? <Link className="secondary change-vehicle-link" to="/profile">Change Vehicle</Link> : null}
+        <span className={`badge ${complete ? "" : "orange"}`}>{complete ? "Verified setup" : "Engine required"}</span>
+        {vehicle.engine ? <FuelTypeBadge fuelType={vehicle.fuelType} /> : null}
+        <Link className="secondary change-vehicle-link" to="/profile">Change Vehicle</Link>
       </div>
     </div>
   );

@@ -21,6 +21,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
+function authHeaders(sessionToken?: string): HeadersInit {
+  return sessionToken ? { "x-session-token": sessionToken } : {};
+}
+
 export function getYears() {
   return request<string[]>("/years");
 }
@@ -112,6 +116,62 @@ export function getVehicleImage(vehicle: Pick<SelectedVehicle, "year" | "make" |
   return request<{ success: boolean; image: VehicleImage | null }>(`/vehicle-image?${params.toString()}`);
 }
 
+export interface AuthUser {
+  id: number;
+  email: string;
+  fullName?: string;
+  plan?: string;
+}
+
+export interface AuthResponse {
+  mode: "authenticated" | "guest";
+  sessionToken: string;
+  user: AuthUser | null;
+}
+
+export function login(email: string, password: string) {
+  return request<AuthResponse>("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function getSession(sessionToken: string) {
+  return request<AuthResponse>("/auth/session", {
+    headers: authHeaders(sessionToken),
+  });
+}
+
+export function logout(sessionToken: string) {
+  return request<{ ok: boolean }>("/auth/logout", {
+    method: "POST",
+    headers: authHeaders(sessionToken),
+  });
+}
+
+export function getAccountData(sessionToken: string) {
+  return request<{ data: Record<string, unknown>; updatedAt: string | null }>("/account/data", {
+    headers: authHeaders(sessionToken),
+  });
+}
+
+export function saveAccountData(sessionToken: string, data: Record<string, unknown>) {
+  return request<{ data: Record<string, unknown>; updatedAt: string | null }>("/account/data", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders(sessionToken) },
+    body: JSON.stringify({ data }),
+  });
+}
+
+export function trackEvent(body: { sessionId: string; eventName: string; payload?: Record<string, unknown> }) {
+  return request<{ ok: boolean }>("/analytics/events", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export const api = {
   years: getYears,
   makes: getMakes,
@@ -128,4 +188,10 @@ export const api = {
   shops: (zip: string, vehicle?: SelectedVehicle, issue?: string) =>
     getShops({ zip, make: vehicle?.make, issue }),
   image: getVehicleImage,
+  login,
+  getSession,
+  logout,
+  getAccountData,
+  saveAccountData,
+  trackEvent,
 };

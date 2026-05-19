@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { PageTitle } from "../components/PageTitle";
 import { SelectedVehicleCard } from "../components/SelectedVehicleCard";
 import { useVehicle } from "../context/VehicleContext";
-import { makeId, readLocalArray, STORAGE_KEYS, type TodoEntry, vehicleKey, writeLocalArray } from "../utils/localData";
+import { CLOUD_DATA_RESTORE_EVENT, makeId, readLocalArray, STORAGE_KEYS, type TodoEntry, vehicleKey, writeLocalArray } from "../utils/localData";
 
 export function TodosPage() {
   const { selectedVehicle } = useVehicle();
@@ -12,6 +12,11 @@ export function TodosPage() {
   const activeKey = selectedVehicle ? vehicleKey(selectedVehicle) : "";
 
   useEffect(() => writeLocalArray(STORAGE_KEYS.todos, todos), [todos]);
+  useEffect(() => {
+    const reload = () => setTodos(readLocalArray(STORAGE_KEYS.todos));
+    window.addEventListener(CLOUD_DATA_RESTORE_EVENT, reload);
+    return () => window.removeEventListener(CLOUD_DATA_RESTORE_EVENT, reload);
+  }, []);
 
   function addTodo() {
     if (!selectedVehicle || !title.trim()) return;

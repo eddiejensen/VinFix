@@ -3,13 +3,18 @@ import { PageTitle } from "../components/PageTitle";
 import { SelectedVehicleCard, vehicleName } from "../components/SelectedVehicleCard";
 import { useVehicle } from "../context/VehicleContext";
 import type { SelectedVehicle } from "../types";
-import { readLocalArray, STORAGE_KEYS, vehicleKey, writeLocalArray } from "../utils/localData";
+import { CLOUD_DATA_RESTORE_EVENT, readLocalArray, STORAGE_KEYS, vehicleKey, writeLocalArray } from "../utils/localData";
 
 export function GaragePage() {
   const { selectedVehicle, setSelectedVehicle } = useVehicle();
   const [garage, setGarage] = useState<SelectedVehicle[]>(() => readLocalArray(STORAGE_KEYS.garage));
 
   useEffect(() => writeLocalArray(STORAGE_KEYS.garage, garage), [garage]);
+  useEffect(() => {
+    const reload = () => setGarage(readLocalArray(STORAGE_KEYS.garage));
+    window.addEventListener(CLOUD_DATA_RESTORE_EVENT, reload);
+    return () => window.removeEventListener(CLOUD_DATA_RESTORE_EVENT, reload);
+  }, []);
 
   function addCurrentVehicle() {
     if (!selectedVehicle) return;
@@ -26,7 +31,7 @@ export function GaragePage() {
       <div className="page-head">
         <span className="eyebrow">Garage</span>
         <h1>Saved vehicles</h1>
-        <p>Keep vehicles on this device and switch between them quickly.</p>
+        <p>Keep vehicles in your account and switch between them quickly.</p>
       </div>
       <SelectedVehicleCard vehicle={selectedVehicle} />
       <button className="primary" disabled={!selectedVehicle} onClick={addCurrentVehicle}>Add current vehicle to garage</button>
